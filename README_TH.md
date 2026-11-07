@@ -4,7 +4,7 @@
 
 คะแนนจากชุดตรวจสอบในเครื่องเป็นเพียงตัวช่วยเลือกแนวทาง ไม่รับประกันคะแนน Kaggle หรือเกรด เพราะข้อมูลทดสอบไม่มีเฉลยให้ตรวจโดยตรง
 
-เริ่มที่ [Notebook พร้อมคำอธิบาย](Player_Intelligence_System.ipynb) และ [คู่มือเรียนรู้ทีละขั้น](STUDY_GUIDE_TH.md) หลังรันครบ ดู ผลทดลองใน `outputs/main/RESULTS_TH.md` และ ไฟล์ส่งใน `outputs/main/submission.csv`
+สำหรับทำงานกลุ่ม ให้เริ่มที่ [Notebook บน Google Colab](https://colab.research.google.com/github/Kawi-HBLI/player-intelligence-system-cpe342/blob/main/Player_Intelligence_Colab.ipynb) แล้วเลือก File > Save a copy in Drive เพื่อสร้างสำเนาของตนเอง การแชร์โน้ตบุ๊กไม่แชร์หน่วยความจำ runtime ระหว่างสมาชิก ดู [คู่มือเรียนรู้ทีละขั้น](STUDY_GUIDE_TH.md) สำหรับหลักการและเมตริก หรือใช้ [Notebook สำหรับรันในเครื่อง](Player_Intelligence_System.ipynb) เมื่อทำงานบน Windows
 
 ## โครงสร้างข้อมูลที่ใช้
 
@@ -66,7 +66,9 @@ python -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe prepare_images.py --download
 ```
 
-### ใช้ใน Kaggle Notebook
+### สมุดอธิบายเดิมสำหรับเครื่องและ Kaggle
+
+ส่วนนี้หมายถึง `Player_Intelligence_System.ipynb` สำหรับอ่านคำอธิบายและผลในเครื่อง ส่วนการทำงานร่วมกันบน Colab ให้เปิด `Player_Intelligence_Colab.ipynb` ตามลิงก์ต้นเอกสาร โดยสมุด Colab ตั้ง `RUN_TRAINING=True` และให้กำหนด `DATA_PATH` กับโฟลเดอร์ผลบน Drive ก่อนรัน
 
 โน้ตบุ๊กประกอบด้วย source code ที่จำเป็นในตัว ไม่ต้องแนบไฟล์ source แยกอีกครั้ง จุดเริ่มต้นจะค้นหา `sample_submission.csv` ที่ไม่ซ้ำในข้อมูลที่แนบมาเพื่อกำหนด `DATA_ROOT` โดยอัตโนมัติ ค่า `RUN_TRAINING=False` เป็นค่าเริ่มต้นเพื่อเปิดดูรายงานและ metrics ที่มีอยู่ โดยไม่เผลอเริ่มการฝึกที่ใช้เวลานาน หากต้องการฝึกบนเครื่องที่มี GPU ให้เปลี่ยนเป็น `True` ด้วยตนเอง ตรวจ `DATA_ROOT` และความพร้อมของภาพก่อนเริ่ม
 

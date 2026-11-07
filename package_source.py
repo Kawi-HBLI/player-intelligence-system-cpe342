@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parent
 def main():
     files=list(ROOT.glob('*.py'))+list(ROOT.glob('*.md'))+list(ROOT.glob('*.ipynb'))
     files+=list((ROOT/'pis').glob('*.py'))+list((ROOT/'tests').glob('*.py'))
-    files += [ROOT/'requirements.txt',ROOT/'.gitignore']
+    files += list(ROOT.glob('requirements*.txt'))+[ROOT/'.gitignore']
     out=ROOT/'outputs'/'main'
     files+=list(out.glob('*metrics.json'))
     files += [out/name for name in ('RESULTS_TH.md','validation_results.png','results_summary.json','data_audit.json','environment_verified.json')]

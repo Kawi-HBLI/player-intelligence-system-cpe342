@@ -1,29 +1,45 @@
 # Player Intelligence System
 
-This repository contains the implementation for the CPE342 Machine Learning competition, Player Intelligence System. The project covers anti-cheat detection, player segmentation, monthly spending prediction, game screenshot classification, and account security monitoring.
+This repository contains the source code, notebooks, and documentation for the CPE342 Machine Learning competition. It covers anti-cheat detection, player segmentation, monthly spending prediction, game screenshot classification, and account security monitoring.
 
-The tabular tasks use CatBoost, the image classification task uses ResNet18, and the anomaly detection task uses an Isolation Forest ensemble. The implementation includes data checks, validation, model training, and submission file generation.
+[Open Player Intelligence System in Google Colab](https://colab.research.google.com/github/Kawi-HBLI/player-intelligence-system-cpe342/blob/main/Player_Intelligence_Colab.ipynb)
 
-## Repository contents
+## Run as a group in Google Colab
 
-The `pis` directory contains the task implementations. `run.py` provides the command-line interface, and `Player_Intelligence_System.ipynb` provides a self-contained notebook. Detailed learning notes are available in [STUDY_GUIDE_TH.md](STUDY_GUIDE_TH.md), with additional setup instructions in [README_TH.md](README_TH.md).
+The Colab notebook is the recommended entry point for team members. It uses the implementation from this repository and keeps competition data and run artifacts in Google Drive rather than GitHub.
 
-Competition datasets, generated predictions, trained models, and local Python environments are excluded from version control. The published notebook has no saved execution outputs. An executed copy is kept locally under `outputs/main/Player_Intelligence_System.executed.ipynb`.
+1. Open the Colab link above. In Colab, choose Save a copy in Drive from the File menu so you have a notebook in your own Google Drive. Each team member should run their own copy. Sharing a notebook shares its code and saved outputs, but it does not share the running virtual machine or its memory with other people. See Google's [Colab FAQ](https://research.google.com/colaboratory/faq.html) for notebook sharing and runtime details.
+2. Put the competition ZIP in `My Drive/CPE342/data.zip`, or choose the notebook's upload option. The raw competition data is not stored in this GitHub repository. If you use a folder that is already present in the Colab runtime, select the local-folder data source and set `DATA_PATH` to it.
+3. In the notebook's Settings cell, review `DATA_SOURCE`, `DATA_PATH`, `TASKS`, `PROFILE`, `RUN_NAME`, `RUN_TRAINING`, and `USE_DRIVE`. The defaults use Drive for data and output, run all five tasks, use the balanced profile, and enable training. A new run gets a unique folder under `My Drive/CPE342/runs/`; set `RUN_NAME` when you want to use a specific run folder. If you set `USE_DRIVE=False`, set `OUTPUT_ROOT` to a path under `/content`; those outputs will be temporary unless you download or copy them before the runtime ends.
+4. For Task 4, select a GPU in the Change runtime type dialog under Runtime if one is available. The notebook prepares the separate image dataset when needed. Colab GPU availability and runtime duration vary, so a GPU or uninterrupted run is not guaranteed. Google's [resource information](https://research.google.com/colaboratory/faq.html#resource-limits) describes these limits.
+5. Run the cells from top to bottom. The notebook installs `requirements-colab.txt` from this repository and uses the PyTorch installation already available in the Colab runtime. It records the repository commit used for the run. Do not maintain a separate copy of the model implementation in the notebook.
 
-## Setup
+The notebook extracts ZIP data under `/content` for training and saves predictions, metrics, and checkpoints to the selected Drive run folder. `/content` belongs to the active runtime and is temporary. Drive artifacts remain available after a runtime disconnect, but training does not automatically resume from a checkpoint. A named `RUN_NAME` selects an existing folder; with `RUN_TRAINING=False`, use it to inspect results or assemble shared predictions. With training enabled, selected tasks run again. After reconnecting, mount Drive again, point `RUN_NAME` to the existing folder, and choose the tasks you need.
 
-Python 3.12 was used for the recorded experiments. Install the dependencies in a virtual environment. The following commands use Windows PowerShell.
+### Split work across teammates
+
+Each teammate can set `TASKS` to one task and use a distinct `RUN_NAME`. Share the resulting `taskN_predictions.csv` files through a shared Drive folder. To assemble the final file, copy all five prediction files into one run folder, set `RUN_NAME` to that folder, set `RUN_TRAINING=False`, and run the notebook through its results and assembly cells. The final check also needs the matching Task 4 metadata; the notebook prepares the separate image dataset if it is missing. Each member's runtime remains separate, even when they share the same notebook.
+
+Set `DOWNLOAD_RESULTS=True` if you also want the notebook to download a curated results archive. It contains predictions and metrics, not trained weights, raw competition data, or temporary caches. Checkpoints remain in the run folder on Drive.
+
+## Run locally on Windows
+
+For fast local iterations, the command-line interface remains available alongside the group notebook. The recorded local experiments used Python 3.12. Run these commands from the repository root in PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Download the data from the [competition page](https://www.kaggle.com/competitions/player-intelligence-system-cpe-342-ml) and place the original task folders in `../cpe342-kaggle-main`, relative to the repository root. Keep the original folder names, from `01_binary_classification` to `05_anomaly_detection`, together with `sample_submission.csv`. A different location can be supplied with `--data-root`.
+Download the competition data from the [competition page](https://www.kaggle.com/competitions/player-intelligence-system-cpe-342-ml) and place the original task folders in `../cpe342-kaggle-main`, relative to this repository. Keep the folder names from `01_binary_classification` to `05_anomaly_detection` and include `sample_submission.csv`. Use `--data-root` for a different location.
 
-Task 4 images are distributed separately through the link provided by the instructor. `prepare_images.py --download` downloads and extracts that archive. If images are stored in a separate dataset directory, supply its location with `--image-root`.
+Task 4 images are distributed separately by the instructor. To download and extract them into the data root, run:
 
-## Running the project
+```powershell
+.\.venv\Scripts\python.exe prepare_images.py --download
+```
+
+Use `--image-root` if the Task 4 dataset is in a separate folder. The local environment installs PyTorch from `requirements.txt`; the Colab notebook uses `requirements-colab.txt` and the runtime's existing PyTorch installation.
 
 ```powershell
 .\.venv\Scripts\python.exe run.py audit
@@ -34,12 +50,22 @@ Task 4 images are distributed separately through the link provided by the instru
 .\.venv\Scripts\python.exe report_results.py
 ```
 
-Generated files are written to `outputs/main`. The notebook can also be used on Kaggle with the competition datasets attached. Set `RUN_TRAINING=True` to train the models in a new environment. Rebuild the notebook with `python build_notebook.py` after changing the Python implementation.
+Generated files are written to `outputs/main/`. To rebuild the local teaching notebook after changing the implementation, run `python build_notebook.py`. The shared Colab notebook is generated by `python build_colab_notebook.py`.
+
+## Repository contents
+
+- `pis/` contains the task implementations and data/submission utilities.
+- `run.py` provides the local command-line interface.
+- `Player_Intelligence_Colab.ipynb` is the group notebook for Colab; `Player_Intelligence_System.ipynb` is the local teaching notebook.
+- `README_TH.md` contains Thai setup notes, and `STUDY_GUIDE_TH.md` explains the tasks and metrics.
+- `requirements.txt` is for the local environment. `requirements-colab.txt` avoids reinstalling PyTorch in Colab.
+
+Competition data, generated outputs, trained models, and local Python environments are excluded from version control. The Colab notebook clones this repository at run time; it does not require a fork or a separate model-code copy.
 
 ## Validation and limitations
 
-Tasks 1 to 3 use cross-validation. Task 4 uses a holdout split that keeps exact duplicate images together. Task 5 has no ground-truth labels, so its F3 score cannot be measured locally. Local validation results should not be presented as Kaggle leaderboard scores.
+Tasks 1 to 3 use cross-validation. Task 4 uses a holdout split that groups byte-identical images. Task 1's threshold-tuned OOF score is optimistic because the same OOF labels select and evaluate the threshold. Task 5 has no ground-truth labels, so its local macro F3 score cannot be calculated. Local validation scores are not Kaggle leaderboard scores.
 
-The competition materials contain differences in the submission format and Task 4 labels. The current implementation uses each task's test row order for the submission IDs and preserves the image labels from the training CSV. The Task 5 instructions also require clarification about fitting an unsupervised model on the supplied unlabeled test data. These assumptions should be confirmed with the teaching team before the final submission.
+The competition materials do not provide an explicit mapping from the `ANS` template IDs to each task's `player_id`; the implementation uses each task's test row order. The template's Task 4 values are numeric, while the Task 4 training CSV labels are strings; the implementation preserves the strings from the training CSV and assignment materials. Confirm both conventions with the teaching team. The Task 5 instructions also need clarification about fitting an unsupervised model on the supplied unlabeled test data.
 
-Team members should make changes on separate branches and open pull requests for review. Each pull request should identify the task affected, describe the change, and include relevant validation results.
+For team code changes, use separate branches and open pull requests for review. Each pull request should identify the task affected, describe the change, and include relevant validation results.
