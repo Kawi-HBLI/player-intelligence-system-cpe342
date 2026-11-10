@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import fbeta_score
 from pis.tabular import _threshold, _score
-from pis.anomaly import temporal_features
+from pis.anomaly import temporal_features, shift_score
 from pis.submission import assemble, validate_frame
 from pis.common import TASKS
 from prepare_images import extract
@@ -36,6 +36,16 @@ class IntegrityTests(unittest.TestCase):
         expected = max(fbeta_score(y,p>=t,beta=2,average='macro') for t in candidates)
         self.assertAlmostEqual(score,expected)
         self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2,average='macro'))
+
+    def test_shift_score_ranks_abrupt_period_jump_highest(self):
+        rng = np.random.default_rng(0)
+        frame = pd.DataFrame({f'login_count_{i}': rng.normal(50, 2, 200) for i in range(1, 5)})
+        frame['vpn_usage'] = 0.0
+        frame.loc[7, 'login_count_4'] += 40   # abrupt jump in the last period
+        frame.loc[9, ['login_count_1', 'login_count_2', 'login_count_3', 'login_count_4']] = np.nan
+        score = shift_score(frame)
+        self.assertEqual(int(np.argmax(score)), 7)
+        self.assertTrue(np.isfinite(score).all())
 
     def test_time_change_uses_previous_periods(self):
         features = temporal_features(pd.DataFrame({'x_1':[1.], 'x_2':[2.], 'x_3':[3.], 'x_4':[10.]}))

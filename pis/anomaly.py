@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import logging
+import warnings
 import joblib
 import numpy as np
 import pandas as pd
@@ -37,6 +38,37 @@ def temporal_features(frame):
     return pd.DataFrame(result, index=frame.index).replace([np.inf, -np.inf], np.nan)
 
 
+SECURITY_FLAGS = ('password_changed', 'vpn_usage', 'suspicious_login_time', 'mass_item_sale')
+
+
+def shift_score(frame):
+    """Percentile rank of abrupt per-period shifts plus security flags.
+
+    For every 4-period family and period j, take the robust z of (value_j - mean of the
+    other periods). A row's score is the sum of log1p of its three largest z values plus
+    0.5 per raised security flag. Rows whose periods are all missing get z = 0.
+    """
+    families = sorted({re.sub(r'_[1-4]$', '', c) for c in frame if re.search(r'_[1-4]$', c)})
+    zs = []
+    for family in families:
+        cols = [f'{family}_{i}' for i in range(1, 5)]
+        if not all(c in frame for c in cols):
+            continue
+        v = frame[cols].to_numpy(dtype=float)
+        for j in range(4):
+            with np.errstate(all='ignore'), warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                d = v[:, j] - np.nanmean(np.delete(v, j, axis=1), axis=1)
+            med = np.nanmedian(d)
+            mad = np.nanmedian(np.abs(d - med)) * 1.4826 + 1e-9
+            zs.append(np.nan_to_num(np.abs((d - med) / mad)))
+    if not zs:
+        raise ValueError('shift_score needs at least one complete 4-period feature family')
+    top = np.sort(np.vstack(zs).T, axis=1)[:, ::-1][:, :3]
+    flags = frame[[c for c in SECURITY_FLAGS if c in frame]].fillna(0).sum(axis=1).to_numpy()
+    return pd.Series(np.log1p(top).sum(axis=1) + 0.5 * flags).rank(method='average', pct=True).to_numpy()
+
+
 def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamination=0.20, threads=-1):
     if not 0 < contamination < 0.5:
         raise ValueError('contamination must be between 0 and 0.5')
@@ -63,7 +95,10 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
         percentile = pd.Series(raw).rank(method='average', pct=True).to_numpy()
         scores.append(percentile)
         artifacts[name] = {'columns': list(features.columns), 'imputer': imputer, 'model': model}
-    ensemble = np.mean(scores, axis=0)
+    # Synthetic-injection check (experiments/t5_synthetic_eval.py): the raw view lowered
+    # macro F3; temporal IsolationForest + shift score ranked injected anomalies best.
+    shift = shift_score(x)
+    ensemble = np.mean([scores[list(artifacts).index('temporal')], shift], axis=0)
     # Stable ranking gives exactly ceil(n * fraction) flagged rows even when scores tie.
     order = np.argsort(-ensemble, kind='stable')
     prediction = np.zeros(len(frame), dtype=int)
@@ -72,9 +107,10 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
     scored = pd.DataFrame({'player_id': frame.player_id, 'anomaly_score': ensemble, 'prediction': prediction})
     for name, view in zip(artifacts, scores):
         scored[f'{name}_rank'] = view
+    scored['shift_rank'] = shift
     scored.to_csv(out / 'task5_scores.csv', index=False)
     joblib.dump(artifacts, out / 'task5_models.joblib')
-    metrics = {'task': 5, 'model': 'IsolationForest raw+temporal percentile-rank ensemble',
+    metrics = {'task': 5, 'model': 'IsolationForest temporal view + period-shift score, percentile-rank mean (raw view kept for reference only)',
                'seed': seed, 'profile': profile, 'trees_per_view': trees, 'n_test': len(frame),
                'contamination_assumption': contamination, 'flagged_rows': int(prediction.sum()),
                'macro_f3': None, 'metric_note': 'No ground-truth labels; local F3 cannot be calculated.',
