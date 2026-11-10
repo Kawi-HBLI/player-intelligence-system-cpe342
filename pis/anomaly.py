@@ -37,7 +37,7 @@ def temporal_features(frame):
     return pd.DataFrame(result, index=frame.index).replace([np.inf, -np.inf], np.nan)
 
 
-def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamination=0.15, threads=-1):
+def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamination=0.20, threads=-1):
     if not 0 < contamination < 0.5:
         raise ValueError('contamination must be between 0 and 0.5')
     root, out = Path(data_root), Path(output_dir)

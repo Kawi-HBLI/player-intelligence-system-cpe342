@@ -19,7 +19,7 @@ def main(argv=None):
     parser.add_argument('--folds', type=int, default=3)
     parser.add_argument('--seed', type=int, default=342)
     parser.add_argument('--threads', type=int, default=8)
-    parser.add_argument('--contamination', type=float, default=0.15)
+    parser.add_argument('--contamination', type=float, default=0.20)
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--workers', type=int, default=0)
