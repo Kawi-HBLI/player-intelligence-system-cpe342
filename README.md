@@ -54,7 +54,9 @@ Generated files are written to `outputs/main/`. To rebuild the local teaching no
 
 ## Repository contents
 
-- `pis/` contains the task implementations and data/submission utilities.
+- `Task1/` to `Task5/` hold one folder per task: a `README.md` with the method and local results, and a `train.py` entry point (for example `python Task1/train.py`). `Task5/synthetic_eval.py` is the label-free check for Task 5.
+- `pis/` is the shared library those entry points call: `tabular.py` (Tasks 1 to 3), `image.py` (Task 4), `anomaly.py` (Task 5), and the submission utilities.
+- `experiments/` holds experiments that span several tasks, and `docs/KAGGLE_FINDINGS_TH.md` records leaderboard results and findings.
 - `run.py` provides the local command-line interface.
 - `Player_Intelligence_Colab.ipynb` is the group notebook for Colab; `Player_Intelligence_System.ipynb` is the local teaching notebook.
 - `README_TH.md` contains Thai setup notes, and `STUDY_GUIDE_TH.md` explains the tasks and metrics.
@@ -66,6 +68,6 @@ Competition data, generated outputs, trained models, and local Python environmen
 
 Tasks 1 to 3 use cross-validation. Task 4 uses a holdout split that groups byte-identical images. Task 1's threshold-tuned OOF score is optimistic because the same OOF labels select and evaluate the threshold. Task 5 has no ground-truth labels, so its local macro F3 score cannot be calculated. Local validation scores are not Kaggle leaderboard scores.
 
-The competition materials do not provide an explicit mapping from the `ANS` template IDs to each task's `player_id`; the implementation uses each task's test row order. The template's Task 4 values are numeric, while the Task 4 training CSV labels are strings; the implementation preserves the strings from the training CSV and assignment materials. Confirm both conventions with the teaching team. The Task 5 instructions also need clarification about fitting an unsupervised model on the supplied unlabeled test data.
+The competition materials do not provide an explicit mapping from the `ANS` template IDs to each task's `player_id`; the implementation uses each task's test row order. The template's Task 4 values are numeric, while the Task 4 training CSV labels are strings; the submission maps them to the integer classes in the datacard (7-11k=0, fiveN=1, freefried=2, pube=3, roblock=4). Task 4 still scores near chance on the leaderboard; see `docs/KAGGLE_FINDINGS_TH.md`. The Task 5 instructions also need clarification about fitting an unsupervised model on the supplied unlabeled test data.
 
 For team code changes, use separate branches and open pull requests for review. Each pull request should identify the task affected, describe the change, and include relevant validation results.

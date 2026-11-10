@@ -5,7 +5,7 @@ location, skill, economy and social features, plus security flags. Real (unknown
 the base rows act as label noise for every detector equally, so the numbers rank detectors and
 flag rates; they are not the leaderboard F3.
 
-Usage: python experiments/t5_synthetic_eval.py <data_root> [out.json]
+Usage: python Task5/synthetic_eval.py <data_root> [out.json]
 """
 import json
 import sys

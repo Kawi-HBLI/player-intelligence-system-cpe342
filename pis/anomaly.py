@@ -95,7 +95,7 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
         percentile = pd.Series(raw).rank(method='average', pct=True).to_numpy()
         scores.append(percentile)
         artifacts[name] = {'columns': list(features.columns), 'imputer': imputer, 'model': model}
-    # Synthetic-injection check (experiments/t5_synthetic_eval.py): the raw view lowered
+    # Synthetic-injection check (Task5/synthetic_eval.py): the raw view lowered
     # macro F3; temporal IsolationForest + shift score ranked injected anomalies best.
     shift = shift_score(x)
     ensemble = np.mean([scores[list(artifacts).index('temporal')], shift], axis=0)

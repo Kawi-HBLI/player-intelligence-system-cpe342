@@ -52,7 +52,7 @@ Baseline บน leaderboard = 0.70514
 
 ## T5: ตรวจในเครื่องด้วย anomaly เทียม (ไม่ใช้โควตา)
 
-สคริปต์: `experiments/t5_synthetic_eval.py`
+สคริปต์: `Task5/synthetic_eval.py`
 
 ในข้อมูลจริงมีประมาณ 3.3% ของแถวที่ค่ากระโดดเกิน 10 MAD และ 780 จาก 859 แถวกระโดดในช่วงที่ 4 ฟีเจอร์ที่กระโดดได้แก่ ตำแหน่ง login, skill_trajectory, friend_removes และ currency_transfers สคริปต์จึงฉีด anomaly แบบเดียวกัน (มีทั้งกระโดดเบา 1.5 sd ถึงแรง 8 sd และมี security flag ด้วย) เข้าไปในข้อมูล test ตามสัดส่วนที่กำหนด แล้ววัด macro F3 ของ detector แต่ละแบบ
 
