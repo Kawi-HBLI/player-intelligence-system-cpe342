@@ -89,7 +89,7 @@ class ColabNotebookTests(unittest.TestCase):
                 self.assertFalse((data/TASKS[4][0]).exists(),'Task 4 preparation changed the input folder')
                 self.assertTrue((output/'submission.csv').exists())
                 frame=pd.read_csv(output/'submission.csv')
-                self.assertEqual(frame.task4.tolist(),['pube','fiveN'])
+                self.assertEqual(frame.task4.tolist(),[3,1])
                 with zipfile.ZipFile(output/'results.zip') as bundle:
                     self.assertIn('submission.csv',bundle.namelist())
                     self.assertNotIn('task3_oof.csv',bundle.namelist())

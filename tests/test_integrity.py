@@ -59,7 +59,7 @@ class IntegrityTests(unittest.TestCase):
             assemble(root,out)
             frame=pd.read_csv(out/'submission.csv')
             self.assertEqual(frame.task1.tolist(),[0,1])
-            self.assertEqual(frame.task4.tolist(),['fiveN','pube'])
+            self.assertEqual(frame.task4.tolist(),[1,3])
             frame.loc[0,'task3']=-1
             with self.assertRaises(ValueError):validate_frame(frame,root)
             (out/'task4_predictions.csv').unlink()

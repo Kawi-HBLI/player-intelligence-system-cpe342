@@ -5,6 +5,21 @@ import numpy as np
 import pandas as pd
 from .common import TASKS, write_json, image_folder
 
+# Kaggle Overview and the Task 4 datacard define the submitted classes as integers:
+# 0 7-Eleven Knight, 1 FiveN, 2 Free Fried, 3 PUBE Mobile, 4 Roblock.
+TASK4_CLASS_INDEX = {'7-11k': 0, 'fiveN': 1, 'freefried': 2, 'pube': 3, 'roblock': 4}
+
+
+def task4_to_index(values):
+    """Map Task 4 train.csv text labels to the integer classes Kaggle scores."""
+    series = pd.Series(values)
+    if pd.api.types.is_numeric_dtype(series):
+        return series.to_numpy()
+    unknown = sorted(set(series) - set(TASK4_CLASS_INDEX))
+    if unknown:
+        raise ValueError(f'Task 4: unknown labels {unknown}; expected {sorted(TASK4_CLASS_INDEX)}')
+    return series.map(TASK4_CLASS_INDEX).to_numpy(dtype=int)
+
 
 def read_template(data_root):
     path = Path(data_root) / 'sample_submission.csv'
@@ -30,12 +45,7 @@ def _allowed(data_root, task, image_root=None):
         return {0, 1}
     if task == 2:
         return {0, 1, 2, 3}
-    folder, target = TASKS[task]
-    train = pd.read_csv(image_folder(data_root, image_root) / 'train.csv')
-    col = next((c for c in ('class', 'game_title', 'label', 'target') if c in train), None)
-    if col is None:
-        raise ValueError('Cannot determine Task 4 label column')
-    return set(train[col].dropna().unique())
+    return set(TASK4_CLASS_INDEX.values())
 
 
 def validate_frame(frame, data_root, image_root=None):
@@ -77,6 +87,8 @@ def assemble(data_root, output_dir, image_root=None):
         if set(ids) != set(prediction.player_id) or len(prediction) != len(ids):
             raise ValueError(f'Task {task}: prediction IDs do not match this task test.csv')
         values = prediction.set_index('player_id').loc[ids, 'prediction'].to_numpy()
+        if task == 4:
+            values = task4_to_index(values)
         if task != 3 and pd.api.types.is_numeric_dtype(values):
             if not np.isfinite(values).all() or not np.equal(values, np.floor(values)).all():
                 raise ValueError(f'Task {task}: fractional or nonfinite class label')
