@@ -1,4 +1,5 @@
 """Train and evaluate the game screenshot classifier without using test labels."""
+from .submission import task4_image_keys
 from pathlib import Path
 import hashlib
 import json
@@ -60,7 +61,8 @@ def train_image(data_root: Path, output_dir: Path, seed: int = 342,
         if not found:
             raise ValueError(f'Missing {what}; expected one of {options}, got {list(columns)}')
         return found[0]
-    id_col = choose(train.columns, ('id', 'player_id', 'image_id', 'filename', 'file', 'image'), 'image identifier')
+    # `file_name` first: in the 12 Nov csv layout `id` is the ANS/PLY code, not the image.
+    id_col = choose(train.columns, ('file_name', 'id', 'player_id', 'image_id', 'filename', 'file', 'image'), 'image identifier')
     if id_col not in test.columns:
         raise ValueError(f'Test metadata lacks identifier column {id_col}')
     if train[id_col].duplicated().any() or test[id_col].duplicated().any():
@@ -175,10 +177,10 @@ def train_image(data_root: Path, output_dir: Path, seed: int = 342,
     val_pred, test_pred = infer(val_loader), infer(test_loader)
     def original(indices):
         return [classes[int(i)] for i in indices]
-    pd.DataFrame({'player_id': train.iloc[val_idx][id_col].to_numpy(),
+    pd.DataFrame({'player_id': task4_image_keys(train.iloc[val_idx]).to_numpy(),
                   'actual': train.iloc[val_idx][label_col].to_numpy(),
                   'prediction': original(val_pred)}).to_csv(output_dir / 'task4_validation.csv', index=False)
-    pd.DataFrame({'player_id': test[id_col].to_numpy(), 'prediction': original(test_pred)}).to_csv(
+    pd.DataFrame({'player_id': task4_image_keys(test).to_numpy(), 'prediction': original(test_pred)}).to_csv(
         output_dir / 'task4_predictions.csv', index=False)
     metrics = {'task': 4, 'seed': seed, 'profile': profile, 'device': str(device),
                'pretrained': pretrained, 'train_size': int(len(fit_idx)), 'validation_size': int(len(val_idx)),

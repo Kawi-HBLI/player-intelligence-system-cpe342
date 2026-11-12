@@ -67,13 +67,6 @@ def _prepare(train, test, target):
     return x, xt, categorical
 
 
-def _id_number(player_id):
-    number = pd.to_numeric(player_id.astype(str).str.extract(r'(\d+)$')[0], errors='coerce')
-    if number.isna().any():
-        raise ValueError('player_id must end with digits to derive player_id_number')
-    return number.astype(int).to_numpy()
-
-
 def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
                seed: int = 342, profile: str = 'balanced', threads: int = -1,
                engine: str = 'auto') -> dict:
@@ -109,12 +102,6 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
     if train.empty:
         raise ValueError('No labeled training rows')
     x, xt, categorical = _prepare(train, test, target)
-    if task == 2:
-        # Task 2 ids were generated in segment order, so the id number is a strong
-        # feature (OOF macro F1 0.75 -> 0.97). It is an artifact of the synthetic data,
-        # not player behaviour; see docs/KAGGLE_FINDINGS_TH.md.
-        x['player_id_number'] = _id_number(train['player_id'])
-        xt['player_id_number'] = _id_number(test['player_id'])
     y = train[target].to_numpy()
     if task == 3 and (np.any(y < 0) or np.sum(y) <= 0):
         raise ValueError('Task 3 targets must be nonnegative with positive sum')

@@ -17,7 +17,9 @@ def extract(archive, data_root):
             parts = PurePosixPath(item.filename).parts
             if parts and parts[0] == 'task4_image_classification':
                 parts = parts[1:]
-            if not parts:
+            # The 12 Nov archive has no top folder and carries macOS metadata plus its own
+            # datacard.txt, which differs from the one Kaggle ships in the same folder.
+            if not parts or parts[0] == '__MACOSX' or parts == ('datacard.txt',):
                 continue
             dest = target.joinpath(*parts).resolve()
             if not dest.is_relative_to(target) or (item.external_attr >> 16) & 0o170000 == 0o120000:

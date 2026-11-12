@@ -51,6 +51,26 @@ class IntegrityTests(unittest.TestCase):
         features = temporal_features(pd.DataFrame({'x_1':[1.], 'x_2':[2.], 'x_3':[3.], 'x_4':[10.]}))
         self.assertEqual(features.x_last_delta.iloc[0],8.)
 
+    def test_task4_fixed_csv_joins_on_answer_id_not_row_order(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            root,out = Path(tmp)/'data',Path(tmp)/'out'
+            root.mkdir();out.mkdir()
+            sample = pd.DataFrame({'id':['ANS00001','ANS00002'], **{f'task{i}':[0,0] for i in range(1,6)}})
+            sample.to_csv(root/'sample_submission.csv',index=False)
+            for i,(folder,_) in TASKS.items():
+                path=root/folder;path.mkdir()
+                if i==4:
+                    # Rows deliberately listed in reverse ANS order.
+                    pd.DataFrame({'id':['ANS00002','ANS00001'],'file_name':['imgb.jpg','imga.jpg'],'label':[None,None]}).to_csv(path/'test.csv',index=False)
+                    pd.DataFrame({'id':['PLY00001'],'file_name':['x.jpg'],'label':[3]}).to_csv(path/'train.csv',index=False)
+                    pd.DataFrame({'player_id':['imga','imgb'],'prediction':['roblock','7-11k']}).to_csv(out/'task4_predictions.csv',index=False)
+                else:
+                    pd.DataFrame({'player_id':[f'T{i}a',f'T{i}b']}).to_csv(path/'test.csv',index=False)
+                    pd.DataFrame({'player_id':[f'T{i}a',f'T{i}b'],'prediction':[1,0]}).to_csv(out/f'task{i}_predictions.csv',index=False)
+            assemble(root,out)
+            frame=pd.read_csv(out/'submission.csv')
+            self.assertEqual(frame.task4.tolist(),[4,0])  # ANS00001 -> imga -> roblock, ANS00002 -> imgb -> 7-11k
+
     def test_submission_aligns_within_task_and_rejects_missing_task(self):
         # Keep temporary files inside the verified workspace test directory.
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:

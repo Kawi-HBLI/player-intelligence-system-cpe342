@@ -40,6 +40,19 @@ def _ids(frame):
     raise ValueError('Cannot identify task ID column')
 
 
+def task4_image_keys(frame):
+    """Image key (file stem) per row of a Task 4 csv, for both csv layouts.
+
+    Old layout: `id` holds the image name. New layout (12 Nov data fix): `id` holds the
+    ANS/PLY code and `file_name` holds the image file, so `file_name` wins when present.
+    """
+    column = 'file_name' if 'file_name' in frame else next(
+        (c for c in ('id', 'image_id', 'filename') if c in frame), None)
+    if column is None:
+        raise ValueError('Cannot identify the Task 4 image column')
+    return frame[column].astype(str).str.replace(r'\.[A-Za-z0-9]+$', '', regex=True)
+
+
 def _allowed(data_root, task, image_root=None):
     if task in (1, 5):
         return {0, 1}
@@ -79,7 +92,7 @@ def assemble(data_root, output_dir, image_root=None):
         prediction = pd.read_csv(path, dtype={'player_id': str})
         task_root = image_folder(root, image_root) if task == 4 else root / folder
         test = pd.read_csv(task_root / 'test.csv')
-        ids = _ids(test)
+        ids = task4_image_keys(test) if task == 4 else _ids(test)
         if len(ids) != len(sample) or not ids.is_unique:
             raise ValueError(f'Task {task}: wrong test count or duplicate IDs')
         if not {'player_id', 'prediction'} <= set(prediction.columns) or not prediction.player_id.is_unique:
@@ -89,6 +102,13 @@ def assemble(data_root, output_dir, image_root=None):
         values = prediction.set_index('player_id').loc[ids, 'prediction'].to_numpy()
         if task == 4:
             values = task4_to_index(values)
+            if 'file_name' in test and 'id' in test:
+                # The fixed test.csv names the ANS id of every image: join on it
+                # instead of trusting row order.
+                by_answer = pd.Series(values, index=test['id'].astype(str))
+                if not by_answer.index.is_unique or set(by_answer.index) != set(sample.id.astype(str)):
+                    raise ValueError('Task 4: test.csv ids do not match the submission template ids')
+                values = by_answer.loc[sample.id.astype(str)].to_numpy()
         if task != 3 and pd.api.types.is_numeric_dtype(values):
             if not np.isfinite(values).all() or not np.equal(values, np.floor(values)).all():
                 raise ValueError(f'Task {task}: fractional or nonfinite class label')
