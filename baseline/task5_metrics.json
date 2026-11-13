@@ -1,0 +1,20 @@
+{
+  "task": 5,
+  "model": "IsolationForest raw+temporal percentile-rank ensemble (shift score kept for reference only)",
+  "seed": 342,
+  "profile": "balanced",
+  "trees_per_view": 400,
+  "n_test": 25889,
+  "contamination_assumption": 0.2,
+  "flagged_rows": 5178,
+  "macro_f3": null,
+  "metric_note": "No ground-truth labels; local F3 cannot be calculated.",
+  "fit_policy": "Task5-specific transductive unsupervised fit on provided unlabeled test.csv. General no-test-training rule needs TA clarification.",
+  "sensitivity_flagged_rows": {
+    "0.05": 1295,
+    "0.1": 2589,
+    "0.15": 3884,
+    "0.2": 5178,
+    "0.3": 7767
+  }
+}

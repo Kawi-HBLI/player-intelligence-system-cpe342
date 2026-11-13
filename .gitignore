@@ -18,3 +18,7 @@ outputs/
 data/
 datasets/
 cpe342-kaggle-main/
+
+# Team baseline outputs are tracked on purpose (see docs/BASELINE_TH.md).
+!baseline/
+!baseline/*.csv
