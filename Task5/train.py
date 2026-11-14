@@ -1,6 +1,6 @@
 """Task 5 entry point: account anomaly detection (unsupervised, macro F3).
 
-Run from the repository root:  python Task5/train.py --contamination 0.20
+Run from the repository root:  python Task5/train.py --profile balanced --contamination auto
 Extra arguments are passed on to run.py (see `python run.py --help`).
 The shared implementation lives in the `pis` package.
 """

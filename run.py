@@ -7,6 +7,19 @@ from pathlib import Path
 from pis.common import DEFAULT_DATA, DEFAULT_OUTPUT, environment, write_json
 
 
+def _parse_contamination(value):
+    text = str(value).strip().lower()
+    if text in {'auto', 'none'}:
+        return 'auto'
+    try:
+        rate = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('contamination must be "auto" or between 0 and 0.5') from exc
+    if not 0 < rate < 0.5:
+        raise argparse.ArgumentTypeError('contamination must be "auto" or between 0 and 0.5')
+    return rate
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='CPE342 Player Intelligence System')
     parser.add_argument('command', choices=('audit', 'train', 'assemble', 'validate'))
@@ -19,7 +32,7 @@ def main(argv=None):
     parser.add_argument('--folds', type=int, default=3)
     parser.add_argument('--seed', type=int, default=342)
     parser.add_argument('--threads', type=int, default=8)
-    parser.add_argument('--contamination', type=float, default=0.20)
+    parser.add_argument('--contamination', type=_parse_contamination, default='auto')
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--workers', type=int, default=0)
