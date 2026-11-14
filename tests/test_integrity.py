@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.metrics import fbeta_score
 from pis.tabular import _threshold, _score
 from pis.anomaly import temporal_features, shift_score
+from pis.task1_features import add_range_rules, add_imputed, fit_imputers, IMPUTED
 from pis.submission import assemble, validate_frame
 from pis.common import TASKS
 from prepare_images import extract
@@ -36,6 +37,24 @@ class IntegrityTests(unittest.TestCase):
         expected = max(fbeta_score(y,p>=t,beta=2,average='macro') for t in candidates)
         self.assertAlmostEqual(score,expected)
         self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2,average='macro'))
+
+    def test_task1_range_rules_count_certain_cases_and_ignore_missing(self):
+        frame = pd.DataFrame({'crosshair_placement':[0.81,0.95,np.nan],'reports_received':[4,25,np.nan],
+                              'level':[26.,99.,np.nan],'account_age_days':[100.,1200.,np.nan],
+                              'friend_network_size':[50.,300.,np.nan],'level_progression_speed':[1.,7.,np.nan]})
+        out = add_range_rules(frame)
+        self.assertEqual(out.n_sure_cheat_rules.tolist(),[3,0,0])   # below every legit floor
+        self.assertEqual(out.n_sure_legit_rules.tolist(),[0,6,0])   # above every cheater ceiling
+        self.assertTrue(np.isnan(out.loc[2,'level_above_legit_floor']))
+
+    def test_task1_imputed_columns_keep_observed_values(self):
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame({c: rng.normal(50, 5, 300) for c in IMPUTED})
+        frame['other'] = rng.normal(size=300)
+        frame.loc[:20, 'level'] = np.nan
+        out = add_imputed(frame, fit_imputers(frame))
+        self.assertTrue(out['level_imp'].notna().all())
+        self.assertTrue((out.loc[21:, 'level_imp'] == frame.loc[21:, 'level']).all())
 
     def test_shift_score_ranks_abrupt_period_jump_highest(self):
         rng = np.random.default_rng(0)

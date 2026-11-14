@@ -102,6 +102,9 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
     if train.empty:
         raise ValueError('No labeled training rows')
     x, xt, categorical = _prepare(train, test, target)
+    if task == 1:
+        from .task1_features import build as build_task1_features
+        x, xt = build_task1_features(x, xt, seed)
     y = train[target].to_numpy()
     if task == 3 and (np.any(y < 0) or np.sum(y) <= 0):
         raise ValueError('Task 3 targets must be nonnegative with positive sum')
