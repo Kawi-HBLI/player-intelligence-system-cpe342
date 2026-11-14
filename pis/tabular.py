@@ -22,6 +22,7 @@ TASKS = {1: ('01_binary_classification', 'is_cheater'),
          2: ('02_multiclass_classification', 'segment'),
          3: ('03_regression', 'spending_30d')}
 ITERATIONS = {'quick': 250, 'balanced': 1000, 'strong': 2000}
+TASK2_BAYES_WEIGHT = 0.6  # naive Bayes share in the Task 2 geometric blend
 
 
 def _score(y, prediction):
@@ -105,6 +106,13 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
     if task == 1:
         from .task1_features import build as build_task1_features
         x, xt = build_task1_features(x, xt, seed)
+    if task == 2:
+        # Task 2 features are near-independent within a segment, so a smoothed naive Bayes
+        # is blended with the boosted trees (OOF macro F1 0.752 -> 0.756). It reads the raw
+        # columns so that missing values stay missing.
+        from .task2_naive_bayes import SmoothNaiveBayes, geometric_blend
+        bayes_columns = [c for c in x.columns if not c.startswith('random_metric')]
+        bayes_x, bayes_xt = train[bayes_columns], test[bayes_columns]
     y = train[target].to_numpy()
     if task == 3 and (np.any(y < 0) or np.sum(y) <= 0):
         raise ValueError('Task 3 targets must be nonnegative with positive sum')
@@ -161,8 +169,14 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
             else:
                 fold_classes = model.classes_ if chosen == 'catboost' else model.named_steps['model'].classes_
                 indices = [int(np.flatnonzero(fold_classes == c)[0]) for c in classes]
-                oof[va] = model.predict_proba(val_x)[:, indices]
-                test_preds += model.predict_proba(test_x)[:, indices] / folds
+                val_proba = model.predict_proba(val_x)[:, indices]
+                test_proba = model.predict_proba(test_x)[:, indices]
+                if task == 2:
+                    bayes = SmoothNaiveBayes().fit(bayes_x.iloc[tr], y[tr])
+                    val_proba = geometric_blend(val_proba, bayes.predict_proba(bayes_x.iloc[va]), TASK2_BAYES_WEIGHT)
+                    test_proba = geometric_blend(test_proba, bayes.predict_proba(bayes_xt), TASK2_BAYES_WEIGHT)
+                oof[va] = val_proba
+                test_preds += test_proba / folds
                 fold_pred = (oof[va, 1] >= 0.5).astype(int) if task == 1 else classes[oof[va].argmax(axis=1)]
                 fold_scores.append(float(fbeta_score(y[va], fold_pred, beta=2, average='macro', zero_division=0) if task == 1 else f1_score(y[va], fold_pred, average='macro', zero_division=0)))
     metrics = {'task': task, 'engine': chosen, 'profile': profile, 'folds': folds, 'seed': seed,

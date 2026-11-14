@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.metrics import fbeta_score
 from pis.tabular import _threshold, _score
 from pis.anomaly import temporal_features, shift_score
+from pis.task2_naive_bayes import SmoothNaiveBayes, geometric_blend
 from pis.task1_features import add_range_rules, add_imputed, fit_imputers, IMPUTED
 from pis.submission import assemble, validate_frame
 from pis.common import TASKS
@@ -55,6 +56,20 @@ class IntegrityTests(unittest.TestCase):
         out = add_imputed(frame, fit_imputers(frame))
         self.assertTrue(out['level_imp'].notna().all())
         self.assertTrue((out.loc[21:, 'level_imp'] == frame.loc[21:, 'level']).all())
+
+    def test_smooth_naive_bayes_separates_classes_and_ignores_missing(self):
+        rng = np.random.default_rng(0)
+        y = np.repeat([0, 1], 500)
+        frame = pd.DataFrame({'spend': np.r_[rng.normal(0, 1, 500), rng.normal(4, 1, 500)],
+                              'tier': np.r_[rng.choice(['a', 'b'], 500, p=[.9, .1]), rng.choice(['a', 'b'], 500, p=[.1, .9])]})
+        model = SmoothNaiveBayes().fit(frame, y)
+        self.assertGreater((model.predict_proba(frame).argmax(1) == y).mean(), 0.95)
+        empty = pd.DataFrame({'spend': [np.nan], 'tier': [None]})
+        np.testing.assert_allclose(model.predict_proba(empty)[0], [0.5, 0.5], atol=1e-9)   # only the prior is left
+        unseen = pd.DataFrame({'spend': [np.nan], 'tier': ['zzz']})
+        np.testing.assert_allclose(model.predict_proba(unseen)[0], [0.5, 0.5], atol=1e-9)
+        blend = geometric_blend(np.array([[0.8, 0.2]]), np.array([[0.2, 0.8]]), 0.5)
+        np.testing.assert_allclose(blend, [[0.5, 0.5]], atol=1e-6)
 
     def test_shift_score_ranks_abrupt_period_jump_highest(self):
         rng = np.random.default_rng(0)
