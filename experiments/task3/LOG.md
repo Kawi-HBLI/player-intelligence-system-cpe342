@@ -11,7 +11,7 @@ or notebook and its `*_results.md`; this log is shared and scripts append to it.
 Champion: `champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
 Every experiment is compared fold by fold against both the baseline and the champion. A model is
 promoted only if it beats the champion on all 3 folds (t = 0.5 rows, never OOF-tuned ones); the
-promotion updates `champion/` and this log in the same commit. Current champion: **V3** (step 7).
+promotion updates `champion/` and this log in the same commit. Current champion: **V4** (step 9; V3 before it, Kaggle 0.80313).
 
 | step | date | branch | change | fold scores | OOF | LB | note |
 |---|---|---|---|---|---|---|---|
@@ -28,6 +28,9 @@ promotion updates `champion/` and this log in the same commit. Current champion:
 | 6 | 2026-11-15 | task3/oracle | Oracle E: baseline zeros + true amount | 0.9255 / 0.9184 / 0.9250 | 0.9229 | — | upper bound, NOT submittable |
 | 7 | 2026-11-15 | task3/amount-model | V1: baseline + expected_spend features | 0.7737 / 0.7610 / 0.7691 | 0.7679 | — | wins all folds: no |
 | 7 | 2026-11-15 | task3/amount-model | V2: two-stage (Logloss clf + MAE reg on spenders, THB) | 0.7919 / 0.7766 / 0.7863 | 0.7849 | — | t=0.5; OOF-tuned t=0.500: 0.7849 (optimistic); wins all folds: yes |
-| 7 | 2026-11-15 | task3/amount-model | V3: two-stage (Logloss clf + MAE reg on log(y/prev)) | 0.7958 / 0.7823 / 0.7923 | 0.7900 | — | t=0.5; OOF-tuned t=0.500: 0.7900 (optimistic); wins all folds: yes; **champion** (first, replaces baseline) |
+| 7 | 2026-11-15 | task3/amount-model | V3: two-stage (Logloss clf + MAE reg on log(y/prev)) | 0.7958 / 0.7823 / 0.7923 | 0.7900 | 0.80313 (base 0.80097, +0.00216) | t=0.5; OOF-tuned t=0.500: 0.7900 (optimistic); wins all folds: yes; **champion** (first, replaces baseline); Kaggle check 2026-11-15 (task3 column swap via `make_submission.py`) confirms the CV gain: ≈ +0.011 on Task 3 if the 5 task weights are equal, vs +0.0147 OOF |
 | 8 | 2026-11-15 | task3/v3-tuning | V3a: V3 with amount regressor iterations 3000 | 0.7960 / 0.7823 / 0.7922 | 0.7901 | — | t=0.5; OOF-tuned t=0.500: 0.7901 (optimistic); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0001, wins all folds: no |
 | 8 | 2026-11-15 | task3/v3-tuning | V3b: V3a + classifier depth 8, lr 0.03 | 0.7960 / 0.7823 / 0.7922 | 0.7901 | — | t=0.5; OOF-tuned t=0.500: 0.7901 (optimistic); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0001, wins all folds: no |
+| 9 | 2026-11-15 | task3/quantile-combine | V4-median (sanity): V4 MultiQuantile amount model, α=0.5 output only, t=0.5 | 0.7967 / 0.7826 / 0.7925 | 0.7905 | — | sanity row, not a candidate; should be close to V3; wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0005, wins all folds: yes |
+| 9 | 2026-11-15 | task3/quantile-combine | V4: V3 classifier + MultiQuantile log(y/prev) amount, amount = (1 − 0.5/p) quantile | 0.7982 / 0.7841 / 0.7934 | 0.7918 | — | wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0018, wins all folds: yes; **PROMOTED to champion** |
+| 9 | 2026-11-15 | task3/quantile-combine | V4s: V4 with q = 1 − s·0.5/p, s tuned on OOF | 0.7982 / 0.7841 / 0.7934 | 0.7918 | — | best s=1.0 on the grid 0.6–1.4 (OOF-tuned, optimistic, not a candidate); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0018, wins all folds: yes |
