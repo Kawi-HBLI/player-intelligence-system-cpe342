@@ -13,5 +13,12 @@
   "oof": 0.790016,
   "date": "2026-11-15",
   "previous_champion": "Baseline (pis/tabular.py)",
-  "rule": "promoted only if it beats the current champion on all 3 folds"
+  "rule": "promoted only if it beats the current champion on all 3 folds",
+  "lb": {
+    "date": "2026-11-15",
+    "public": 0.80313,
+    "base_public": 0.80097,
+    "delta": 0.00216,
+    "method": "task3 column swap via make_submission.py"
+  }
 }
