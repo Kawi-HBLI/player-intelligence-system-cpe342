@@ -3,8 +3,8 @@
   "variant": "v4",
   "script": "experiments/task3/amount_model/amount_model.py",
   "branch": "task3/quantile-combine",
-  "commit": "1f90b1d+dirty",
-  "commit_note": "HEAD when the run started; the promotion itself lands in the next commit",
+  "commit": "2c9b869",
+  "commit_note": "code commit of V4 (promotion landed in the same commit); merged into task3-staging via PR #5 (9c61fcc).",
   "fold_scores": [
     0.798169,
     0.784066,
