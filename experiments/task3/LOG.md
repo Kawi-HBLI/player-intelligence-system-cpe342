@@ -8,6 +8,11 @@ metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not sub
 Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`) with its script
 or notebook and its `*_results.md`; this log is shared and scripts append to it.
 
+Champion: `champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
+Every experiment is compared fold by fold against both the baseline and the champion. A model is
+promoted only if it beats the champion on all 3 folds (t = 0.5 rows, never OOF-tuned ones); the
+promotion updates `champion/` and this log in the same commit. Current champion: **V3** (step 7).
+
 | step | date | branch | change | fold scores | OOF | LB | note |
 |---|---|---|---|---|---|---|---|
 | 1 | 2026-11-10 | main | Baseline: CatBoost MAE, 1000 iters, depth 6, lr 0.05, ES 80 | 0.7873 / 0.7587 / 0.7807 | 0.7753 | — | `pis/tabular.py`, `baseline/task3_oof.csv`; LB only as part of the full submission |
@@ -23,4 +28,6 @@ or notebook and its `*_results.md`; this log is shared and scripts append to it.
 | 6 | 2026-11-15 | task3/oracle | Oracle E: baseline zeros + true amount | 0.9255 / 0.9184 / 0.9250 | 0.9229 | — | upper bound, NOT submittable |
 | 7 | 2026-11-15 | task3/amount-model | V1: baseline + expected_spend features | 0.7737 / 0.7610 / 0.7691 | 0.7679 | — | wins all folds: no |
 | 7 | 2026-11-15 | task3/amount-model | V2: two-stage (Logloss clf + MAE reg on spenders, THB) | 0.7919 / 0.7766 / 0.7863 | 0.7849 | — | t=0.5; OOF-tuned t=0.500: 0.7849 (optimistic); wins all folds: yes |
-| 7 | 2026-11-15 | task3/amount-model | V3: two-stage (Logloss clf + MAE reg on log(y/prev)) | 0.7958 / 0.7823 / 0.7923 | 0.7900 | — | t=0.5; OOF-tuned t=0.500: 0.7900 (optimistic); wins all folds: yes |
+| 7 | 2026-11-15 | task3/amount-model | V3: two-stage (Logloss clf + MAE reg on log(y/prev)) | 0.7958 / 0.7823 / 0.7923 | 0.7900 | — | t=0.5; OOF-tuned t=0.500: 0.7900 (optimistic); wins all folds: yes; **champion** (first, replaces baseline) |
+| 8 | 2026-11-15 | task3/v3-tuning | V3a: V3 with amount regressor iterations 3000 | 0.7960 / 0.7823 / 0.7922 | 0.7901 | — | t=0.5; OOF-tuned t=0.500: 0.7901 (optimistic); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0001, wins all folds: no |
+| 8 | 2026-11-15 | task3/v3-tuning | V3b: V3a + classifier depth 8, lr 0.03 | 0.7960 / 0.7823 / 0.7922 | 0.7901 | — | t=0.5; OOF-tuned t=0.500: 0.7901 (optimistic); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0001, wins all folds: no |
