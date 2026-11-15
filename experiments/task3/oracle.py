@@ -146,7 +146,9 @@ def main():
         fit, val = train.iloc[tr], train.iloc[va]
         # C, D: perfect "will they spend?" + a simple ratio rule for "how much?",
         # i.e. is a rule from the EDA enough for the amount stage?
-        preds['C'][va] = rule_prediction(fit, val, [['segment'], []])
+        # Fallback order, `[]` = global. Next level if key is NaN or group < MIN_GROUP.
+        preds['C'][va] = rule_prediction(fit, val, [['segment'], []])  # segment -> global
+        # segment×VIP -> segment -> global
         preds['D'][va] = rule_prediction(fit, val, [['segment', 'vip_status'], ['segment'], []])
     preds = {k: np.maximum(0.0, p) for k, p in preds.items()}
 
