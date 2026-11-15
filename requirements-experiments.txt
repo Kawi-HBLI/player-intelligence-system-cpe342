@@ -1,0 +1,7 @@
+# Extra packages for the scripts in experiments/ only.
+# The pipeline (python run.py ...) needs only requirements.txt.
+# Install both with: python -m pip install -r requirements-experiments.txt
+-r requirements.txt
+lightgbm>=4.5,<5
+xgboost>=2.0,<4
+optuna>=3.6,<5

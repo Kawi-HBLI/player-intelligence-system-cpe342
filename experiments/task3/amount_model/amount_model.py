@@ -234,6 +234,22 @@ def quantile_combine(p, log_q, prev, s=1.0, alphas=ALPHAS, q_min=None, q_map=Non
     return np.where(p > 0.5, prev * np.exp(value), 0.0)
 
 
+# --- Post-processing cap (every Task 3 run from experiments/task3/tuning on, and refit.py) ---
+# Final predictions are clipped to [0, max target of the training data] (300,000 THB; the
+# train target is clipped there: 15 rows sit exactly on it). Why it is always safe: for a
+# row with 0 ≤ y ≤ cap, clipping moves ŷ towards the interval that contains y, so
+# |min(max(ŷ, 0), cap) − y| ≤ |ŷ − y| for every row, and the L1-based score can only stay
+# the same or improve. So it is adopted as a post-processing rule, not through the
+# champion rule. ASSUMPTION: the test target is capped the same way (y_test ≤ max train y);
+# if the test set had larger values, the cap could cost error on exactly those rows.
+# `y_train` is the target of the rows the model was trained on (in CV: the outer-training
+# part, so the validation fold never sets its own cap; every fold's max is 300,000 anyway).
+
+def cap_predictions(pred, y_train):
+    """Clip final Task 3 predictions (THB) to [0, max(y_train)]."""
+    return np.clip(pred, 0.0, float(np.max(y_train)))
+
+
 def calibration_table(spend, p):
     """10 equal-width bins of p: mean p vs actual spend rate (gap > 0: p is too low)."""
     bins = np.minimum((p * 10).astype(int), 9)
@@ -321,6 +337,12 @@ def load_champion(train, base):
     if not (CHAMPION / 'task3_oof.csv').exists():
         return {'name': 'Baseline (no champion yet)'}, base
     meta = json.loads((CHAMPION / 'champion.json').read_text(encoding='utf-8'))
+    if meta.get('protocol', 'val-es') != 'val-es':
+        # This script (and the ones built on it, steps 1-13) early-stops on the scored
+        # validation fold ("val-es"); the champion was scored under another protocol, so a
+        # fold-by-fold comparison mixes protocols. See experiments/task3/LOG.md.
+        print(f'WARNING: champion "{meta["name"]}" uses protocol {meta["protocol"]}, this script uses val-es; '
+              'champion comparisons and --promote mix protocols. Use experiments/task3/tuning/ (honest-es).')
     oof = pd.read_csv(CHAMPION / 'task3_oof.csv')
     assert (oof['player_id'].to_numpy() == train['player_id'].to_numpy()).all(), 'champion OOF row order differs'
     assert np.allclose(oof['target'].to_numpy(), train[TARGET].to_numpy()), 'champion OOF targets differ'
