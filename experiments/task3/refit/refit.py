@@ -32,7 +32,7 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'run.py').exists
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'amount_model'))
 from amount_model import (AMOUNTS, CHAMPION, CLASSIFIERS, COMPONENT_NAMES, MQ_LOSS, N_TEST, OUT,  # noqa: E402
-                          RESULTS, TWO_STAGE, add_features, cb_params, current_branch,
+                          RESULTS, TWO_STAGE, add_features, cap_predictions, cb_params, current_branch,
                           fold_expected_spend, log_ratio, prev_or_one, quantile_combine, upsert_log,
                           with_prev_flag)
 from oracle import FOLDS, SEED, TARGET, to_markdown  # noqa: E402  (on sys.path via amount_model)
@@ -140,7 +140,7 @@ def main():
     clf, reg, (tc, tr_) = fit_v4(add_features(x.iloc[tr], fit_raw, es_fit), fit_raw, y[tr], categorical, 1, n_iter)
     timings += [['fold-1 check', 'classifier', n_iter[CLF], tc], ['fold-1 check', 'amount MultiQuantile', n_iter[AMT], tr_]]
     p_va, q_va = predict_v4(clf, reg, add_features(x.iloc[va], val_raw, es_val), val_raw)
-    fold1 = _score(y[va], quantile_combine(p_va, q_va, prev_or_one(val_raw)))
+    fold1 = _score(y[va], cap_predictions(quantile_combine(p_va, q_va, prev_or_one(val_raw)), y[tr]))
     cv_fold1 = champion['fold_scores'][0]
     fold1_ok = abs(fold1 - cv_fold1) <= FOLD1_TOL
     print(f'fold-1 check: refit rule {fold1:.4f} vs V4 CV {cv_fold1:.4f} (Δ {fold1 - cv_fold1:+.4f}, '
@@ -182,7 +182,11 @@ def main():
         p_ref += p / len(SEED_OFFSETS)
         q_ref = q_ref + q / len(SEED_OFFSETS)
         print(f'seed {SEED + offset}: classifier {tc:.0f}s, amount {tr_:.0f}s', flush=True)
-    pred = quantile_combine(p_ref, q_ref, prev_or_one(test))
+    # Post-processing cap (amount_model.cap_predictions): clip to [0, full-train max target].
+    raw_pred = quantile_combine(p_ref, q_ref, prev_or_one(test))
+    pred = cap_predictions(raw_pred, y)
+    n_capped = int((pred != raw_pred).sum())
+    print(f'cap at {y.max():,.0f}: {n_capped} test row(s) changed', flush=True)
 
     # --- Sanity table: refit vs V4's CV-averaged test predictions ---
     # No CV score is possible, so we check that the refit tells the same story as the CV

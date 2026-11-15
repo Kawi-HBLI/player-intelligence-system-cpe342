@@ -8,6 +8,9 @@ metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not sub
 Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`, `refit/`, `clf_features/`, `ensemble/`, `quantile_calib/`) with its script
 or notebook and its `*_results.md`; this log is shared and scripts append to it.
 
+Dependencies: the pipeline (`python run.py ...`) needs only `requirements.txt`. The experiment scripts also need
+`requirements-experiments.txt` (LightGBM, XGBoost, Optuna): `python -m pip install -r requirements-experiments.txt`.
+
 Champion: `champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
 Every experiment is compared fold by fold against both the baseline and the champion. A model is
 promoted only if it beats the champion on all 3 folds (t = 0.5 rows, never OOF-tuned ones); the
