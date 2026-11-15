@@ -312,7 +312,8 @@ def load_champion(train, base):
     return meta, oof['prediction'].to_numpy(dtype=float)
 
 
-def promote(variant, label, oof_frame, fold_scores, oof_score, previous):
+def promote(variant, label, oof_frame, fold_scores, oof_score, previous,
+            script='experiments/task3/amount_model/amount_model.py'):
     """Write experiments/task3/champion/ for the new champion (commit it with LOG.md).
 
     `previous` is the outgoing champion's meta. Its Kaggle results move into the new
@@ -329,7 +330,7 @@ def promote(variant, label, oof_frame, fold_scores, oof_score, previous):
     # nearly doubles its size while changing fold scores by far less than 1e-4. The target
     # is already given to 2 decimals, so rounding it is lossless.
     oof_frame.round({'target': 2, 'prediction': 2}).to_csv(CHAMPION / 'task3_oof.csv', index=False)
-    meta = {'name': label, 'variant': variant, 'script': 'experiments/task3/amount_model/amount_model.py',
+    meta = {'name': label, 'variant': variant, 'script': script,
             'branch': current_branch(), 'commit': current_commit(),
             'commit_note': 'HEAD when the run started; the promotion itself lands in the next commit',
             'fold_scores': [round(s, 6) for s in fold_scores], 'oof': round(oof_score, 6),
