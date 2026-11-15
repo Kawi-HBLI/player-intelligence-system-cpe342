@@ -7,10 +7,10 @@ in a single-stage model (V1) and in two-stage models (V2: amount in THB, V3: amo
 as a log-ratio to prev_month_spending).
 
 Run from the repo root:
-    python experiments/task3/amount_model.py [--variants v1,v2,v3] [--quick]
+    python experiments/task3/amount_model/amount_model.py [--variants v1,v2,v3] [--quick]
 Prints the summary, error-by-bucket and stage diagnostics; rewrites the tables in
-experiments/task3/amount_model_results.md (the hand-written interpretation is kept);
-upserts one row per variant in experiments/task3/LOG.md; writes test predictions to
+experiments/task3/amount_model/amount_model_results.md (the hand-written interpretation
+is kept); upserts one row per variant in experiments/task3/LOG.md; writes test predictions to
 outputs/experiments/task3_<variant>/task3_predictions.csv (gitignored).
 """
 import argparse
@@ -26,12 +26,12 @@ from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 
-# --- Make `pis` and oracle.py importable no matter where the script is launched from ---
+# --- Make `pis` and ../oracle/oracle.py importable no matter where the script is launched from ---
 # Reuse the project's data path, preprocessing and metric, and the oracle's multiplier
 # code, so the expected_spend feature is exactly the rule scored as scenario D there.
 ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'run.py').exists())
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'oracle'))
 from pis.common import DEFAULT_DATA  # noqa: E402
 from pis.tabular import _prepare, _score  # noqa: E402
 from oracle import (EXPECTED_FOLDS, EXPECTED_OOF, FOLDS, PREV, SEED, TARGET,  # noqa: E402
@@ -47,7 +47,7 @@ GRID = np.round(np.arange(0.30, 0.70 + 1e-9, 0.025), 3)  # thresholds tried for 
 VARIANTS = ['v1', 'v2', 'v3']
 N_TEST = 25_889
 RESULTS = Path(__file__).with_name('amount_model_results.md')
-LOG_FILE = Path(__file__).with_name('LOG.md')
+LOG_FILE = Path(__file__).resolve().parents[1] / 'LOG.md'  # one log for all Task 3 experiments
 OUT = ROOT / 'outputs' / 'experiments'
 INTERPRETATION = '## Interpretation'
 
@@ -150,29 +150,26 @@ def current_branch():
 
 LOG_HEADER = """# Task 3 experiment log
 
-One row per experiment. Fold scores use `KFold(3, shuffle=True, random_state=342)` (same as the
-baseline); metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not submitted).
-
-| date | branch | change | fold scores | OOF | LB | note |
-|---|---|---|---|---|---|---|
-| 2026-11-11 | main | log1p target + RMSE (CatBoost) | — | 0.7716 | — | from docs/KAGGLE_FINDINGS_TH.md; worse than baseline |
-| 2026-11-13 | main | Baseline: CatBoost MAE, 1000 iters, depth 6, lr 0.05, ES 80 | 0.7873 / 0.7587 / 0.7807 | 0.7753 | — | baseline/task3_oof.csv; LB only as part of the full submission |
-| ? | ? | Huber loss | ? | ? | — | TODO: numbers not recorded in the repo, fill in |
-| 2026-11-15 | task3/oracle | Oracle B: true zeros + baseline amount | 0.8406 / 0.8135 / 0.8335 | 0.8290 | — | upper bound, NOT submittable |
-| 2026-11-15 | task3/oracle | Oracle C: true zeros + prev × segment ratio | 0.7591 / 0.7556 / 0.7650 | 0.7599 | — | upper bound, NOT submittable |
-| 2026-11-15 | task3/oracle | Oracle D: true zeros + prev × segment×VIP ratio | 0.7906 / 0.7855 / 0.7939 | 0.7900 | — | upper bound, NOT submittable |
-| 2026-11-15 | task3/oracle | Oracle E: baseline zeros + true amount | 0.9255 / 0.9184 / 0.9250 | 0.9229 | — | upper bound, NOT submittable |
+| step | date | branch | change | fold scores | OOF | LB | note |
+|---|---|---|---|---|---|---|---|
 """
 
 
 def upsert_log(rows):
-    """Add rows to LOG.md; a row with the same (branch, change) replaces the old one, so re-runs don't duplicate."""
+    """Add rows to ../LOG.md; a row with the same (branch, change) is replaced in place, so re-runs don't duplicate.
+
+    `step` is the order experiments were run in. Rows from one run share a step: a re-run
+    keeps the step already logged for this branch, a new branch gets the next number.
+    """
     lines = (LOG_FILE.read_text(encoding='utf-8') if LOG_FILE.exists() else LOG_HEADER).rstrip('\n').split('\n')
+    cells = {i: [c.strip() for c in line.strip().strip('|').split('|')]
+             for i, line in enumerate(lines) if line.startswith('| ') and not line.startswith('| step')}
+    steps = [int(c[0]) for c in cells.values() if c[0].isdigit()]
+    same_branch = [int(c[0]) for c in cells.values() if c[0].isdigit() and c[2] == rows[0][1]]
+    step = str(same_branch[0] if same_branch else max(steps, default=0) + 1)
     for row in rows:
-        new = '| ' + ' | '.join(row) + ' |'
-        key = (row[1], row[2])
-        hit = [i for i, line in enumerate(lines)
-               if line.startswith('| ') and tuple(c.strip() for c in line.strip('|').split('|')[1:3]) == key]
+        new = '| ' + ' | '.join([step, *row]) + ' |'
+        hit = [i for i, c in cells.items() if (c[2], c[3]) == (row[1], row[2])]
         if hit:
             lines[hit[0]] = new
         else:
@@ -352,7 +349,7 @@ def main():
           'is slightly optimistic; differences between rows are still comparable. Rows marked '
           '"OOF-tuned, optimistic" pick the threshold on the same OOF they are scored on.',
           '',
-          f'Generated by `python experiments/task3/amount_model.py --variants {",".join(variants)}'
+          f'Generated by `python experiments/task3/amount_model/amount_model.py --variants {",".join(variants)}'
           f'{" --quick" if args.quick else ""}` ({iterations} iterations). Folds: `KFold({FOLDS}, shuffle=True, '
           f'random_state={SEED})`, same as the baseline. Metric: `_score` from `pis/tabular.py`. '
           f'`expected_spend` = `{PREV}` × median `y / {PREV}` among spenders per segment×VIP '
@@ -378,7 +375,7 @@ def main():
     RESULTS.write_text('\n'.join(md) + '\n' + keep, encoding='utf-8')
     print(f'\nWrote {RESULTS.relative_to(ROOT)}')
 
-    # --- LOG.md: one row per variant (upsert by branch + change) ---
+    # --- ../LOG.md: one row per variant (upsert by branch + change) ---
     today, branch = datetime.date.today().isoformat(), current_branch()
     log_rows = []
     labels = {'v1': 'V1: baseline + expected_spend features',
