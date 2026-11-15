@@ -22,3 +22,6 @@ cpe342-kaggle-main/
 # Team baseline outputs are tracked on purpose (see docs/BASELINE_TH.md).
 !baseline/
 !baseline/*.csv
+
+# Task 3 champion OOF is tracked so every experiment can compare against it fold by fold.
+!experiments/task3/champion/*.csv
