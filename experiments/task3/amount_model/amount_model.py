@@ -163,6 +163,11 @@ def log_ratio(y, raw):
     return np.log(y) - np.log(prev_or_one(raw))
 
 
+def with_prev_flag(xf, raw):
+    """Features of the log-ratio amount models: x + the prev_missing flag (1 = prev treated as 1)."""
+    return xf.assign(prev_missing=raw[PREV].isna().astype(int).to_numpy())
+
+
 # --- Combine the two stages ---
 # Under L1 the best constant for a row is its median. If p(spend) < 0.5 the median of
 # the row's distribution is 0; if p > 0.5 it is a positive amount. So t = 0.5 is the
@@ -308,8 +313,18 @@ def load_champion(train, base):
 
 
 def promote(variant, label, oof_frame, fold_scores, oof_score, previous):
-    """Write experiments/task3/champion/ for the new champion (commit it with LOG.md)."""
+    """Write experiments/task3/champion/ for the new champion (commit it with LOG.md).
+
+    `previous` is the outgoing champion's meta. Its Kaggle results move into the new
+    file's `lb_history`, so a promotion never drops a measured leaderboard score: the
+    history is the only place the LB of earlier champions is kept in machine-readable
+    form. An `lb` key (the older single-result format) is folded into the list too.
+    New Kaggle results are appended to `lb_history` by hand with their own `variant`.
+    """
     CHAMPION.mkdir(exist_ok=True)
+    history = list(previous.get('lb_history', []))
+    if 'lb' in previous:
+        history.append({'variant': previous.get('variant'), **previous['lb']})
     # Rounded to satang (2 decimals): the file is tracked in git, and full float precision
     # nearly doubles its size while changing fold scores by far less than 1e-4. The target
     # is already given to 2 decimals, so rounding it is lossless.
@@ -318,8 +333,8 @@ def promote(variant, label, oof_frame, fold_scores, oof_score, previous):
             'branch': current_branch(), 'commit': current_commit(),
             'commit_note': 'HEAD when the run started; the promotion itself lands in the next commit',
             'fold_scores': [round(s, 6) for s in fold_scores], 'oof': round(oof_score, 6),
-            'date': datetime.date.today().isoformat(), 'previous_champion': previous,
-            'rule': 'promoted only if it beats the current champion on all 3 folds'}
+            'date': datetime.date.today().isoformat(), 'previous_champion': previous['name'],
+            'rule': 'promoted only if it beats the current champion on all 3 folds', 'lb_history': history}
     (CHAMPION / 'champion.json').write_text(json.dumps(meta, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
 
 
@@ -419,8 +434,7 @@ def main():
                 # V3 family: amount as log(y / prev) with MAE; amount = prev × exp(pred).
                 # V4: same target, features and early stopping, but MultiQuantile loss (the
                 # eval metric is the same loss, averaged over alphas).
-                flag = lambda xf, raw: xf.assign(prev_missing=raw[PREV].isna().astype(int).to_numpy())  # noqa: E731
-                f3, v3, t3 = flag(x_fit, fit_raw), flag(x_val, val_raw), flag(x_tst, test)
+                f3, v3, t3 = with_prev_flag(x_fit, fit_raw), with_prev_flag(x_val, val_raw), with_prev_flag(x_tst, test)
                 reg.fit(f3[s_fit], log_ratio(y_fit[s_fit], fit_raw[s_fit]), cat_features=categorical,
                         eval_set=(v3[s_val], log_ratio(y_val[s_val], val_raw[s_val])), use_best_model=True)
                 if kind == 'multiquantile':
@@ -616,7 +630,7 @@ def main():
     elif args.promote:
         c = summary.loc[candidate]
         promote(final[candidate]['variant'], candidate, oof_frames[candidate],
-                [c['fold1'], c['fold2'], c['fold3']], c['OOF'], champ_meta['name'])
+                [c['fold1'], c['fold2'], c['fold3']], c['OOF'], champ_meta)
         promoted = candidate
         print(f'PROMOTED to champion: {candidate} (OOF {c["OOF"]:.4f}); commit champion/ with LOG.md.')
     else:

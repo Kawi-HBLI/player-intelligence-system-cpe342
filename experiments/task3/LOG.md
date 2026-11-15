@@ -5,7 +5,7 @@ Dates are when the result was first committed (from git history). Fold scores us
 `KFold(3, shuffle=True, random_state=342)` like the baseline unless the note says otherwise;
 metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not submitted).
 
-Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`) with its script
+Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`, `refit/`) with its script
 or notebook and its `*_results.md`; this log is shared and scripts append to it.
 
 Champion: `champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
@@ -34,3 +34,4 @@ promotion updates `champion/` and this log in the same commit. Current champion:
 | 9 | 2026-11-15 | task3/quantile-combine | V4-median (sanity): V4 MultiQuantile amount model, α=0.5 output only, t=0.5 | 0.7967 / 0.7826 / 0.7925 | 0.7905 | — | sanity row, not a candidate; should be close to V3; wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0005, wins all folds: yes |
 | 9 | 2026-11-15 | task3/quantile-combine | V4: V3 classifier + MultiQuantile log(y/prev) amount, amount = (1 − 0.5/p) quantile | 0.7982 / 0.7841 / 0.7934 | 0.7918 | — | wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0018, wins all folds: yes; **PROMOTED to champion** |
 | 9 | 2026-11-15 | task3/quantile-combine | V4s: V4 with q = 1 − s·0.5/p, s tuned on OOF | 0.7982 / 0.7841 / 0.7934 | 0.7918 | — | best s=1.0 on the grid 0.6–1.4 (OOF-tuned, optimistic, not a candidate); wins all folds vs baseline: yes; vs champion (V3 two-stage, log-ratio amount, t=0.5): +0.0018, wins all folds: yes |
+| 10 | 2026-11-15 | task3/refit | V4 refit (full train, 3 seeds) | — | — (not measurable) | — | no CV possible, judged on Kaggle; iterations clf 205, amount 1035 (CV mean × 1.2); fold-1 check 0.7983 vs V4 CV 0.7982 (+0.0002); vs V4 CV test preds: Spearman 0.9974, zero share 0.5035 vs 0.5052, sum +0.24%, median non-zero 2,859 vs 2,867, mean p 0.5176 vs 0.5176; runtime per seed clf 2s + amount 47s; checks: all pass; `refit/`, not promoted (champion rule needs fold scores) |
