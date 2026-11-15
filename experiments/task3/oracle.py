@@ -14,11 +14,18 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
 
+# --- Make `pis` importable no matter where the script is launched from ---
+# Reuse the project's data path and metric instead of reimplementing them, so the
+# numbers here are directly comparable with the baseline.
 ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'run.py').exists())
 sys.path.insert(0, str(ROOT))
 from pis.common import DEFAULT_DATA  # noqa: E402
 from pis.tabular import _score  # noqa: E402
 
+# --- Settings ---
+# Folds and seed must match pis/tabular.py, otherwise the baseline OOF predictions
+# would be scored against different validation splits. EXPECTED_* is the baseline
+# result that scenario A has to reproduce before any other number can be trusted.
 TARGET, PREV = 'spending_30d', 'prev_month_spending'
 FOLDS, SEED, MIN_GROUP = 3, 342, 30  # same folds as the baseline (pis/tabular.py)
 EXPECTED_OOF, EXPECTED_FOLDS = 0.7753, [0.7873, 0.7587, 0.7807]
@@ -26,6 +33,12 @@ BINS, BUCKETS = [-1, 0, 1000, 20000, np.inf], ['0', '>0-1k', '1k-20k', '>20k']  
 RESULTS = Path(__file__).with_name('oracle_results.md')
 INTERPRETATION = '## Interpretation'
 
+
+# --- Simple "how much?" rule used by scenarios C and D ---
+# Each fit_* function only ever receives the training part of a fold, and lookup()
+# applies the result to that fold's validation part, so no validation target leaks
+# into the multipliers. MIN_GROUP = 30 drops groups too small for a stable median
+# (e.g. rare segment × VIP combinations); their rows fall back to the next level.
 
 def fit_multipliers(train, keys):
     """Median of y / prev per group, from spenders with a known prev; drop groups < MIN_GROUP rows."""
@@ -49,6 +62,9 @@ def fit_level(train, keys):
 def lookup(valid, hierarchy):
     """Apply the first group level in `hierarchy` that has a fitted value; the last level is global."""
     out = pd.Series(np.nan, index=valid.index)
+    # Levels go from most to least specific (segment×VIP -> segment -> global). Each
+    # level only fills rows still NaN: a missing segment/VIP value or a group dropped
+    # for having < MIN_GROUP rows. The global level always fills the rest.
     for keys, table in hierarchy:
         if not keys:
             out = out.fillna(table)
@@ -66,9 +82,14 @@ def rule_prediction(train, valid, levels):
     """
     mult = lookup(valid, [(k, fit_multipliers(train, k)) for k in levels])
     level = lookup(valid, [(k, fit_level(train, k)) for k in levels])
+    # NaN prev gives NaN here; filling with the group's typical spend keeps those
+    # ~3k spenders in the score with a model-free guess instead of dropping them.
     pred = (valid[PREV] * mult).fillna(level)
     return np.where(valid[TARGET].to_numpy() == 0, 0.0, pred.to_numpy())
 
+
+# --- Error by spend bucket (same buckets as the EDA) ---
+# Shows which kind of player the remaining error comes from after each scenario.
 
 def bucket_table(y, pred):
     frame = pd.DataFrame({'bucket': pd.cut(y, BINS, labels=BUCKETS), 'err': np.abs(y - pred)})
@@ -94,6 +115,10 @@ def to_markdown(frame):
 
 def main():
     sys.stdout.reconfigure(encoding='utf-8')  # Windows consoles (cp874) cannot print Δ
+
+    # --- Load data and check it lines up with the baseline OOF ---
+    # The OOF file has no fold column, so rows are matched to folds by position;
+    # that only works if train.csv is in the same order as when the baseline ran.
     train =pd.read_csv(DEFAULT_DATA / '03_regression' / 'train.csv')
     train = train.loc[train[TARGET].notna()].reset_index(drop=True)  # as pis/tabular.py
     oof = pd.read_csv(ROOT / 'baseline' / 'task3_oof.csv')
@@ -101,6 +126,9 @@ def main():
         'player_id order differs between train.csv and baseline/task3_oof.csv'
     assert np.allclose(train[TARGET].to_numpy(), oof['target'].to_numpy()), 'targets differ from OOF file'
 
+    # --- Build the 5 scenario predictions (A-E) ---
+    # Each scenario makes one stage perfect (using the true target) and keeps the
+    # other as is, so the score gain shows how much that stage is worth.
     y = train[TARGET].to_numpy(dtype=float)
     base = oof['prediction'].to_numpy(dtype=float)
     zero = y == 0
@@ -110,16 +138,21 @@ def main():
              'D': 'D. Oracle zeros + prev × segment×VIP ratio',
              'E': 'E. Baseline zeros + oracle amount'}
     preds = {k: np.zeros(len(y)) for k in names}
-    preds['A'] = base
-    preds['B'] = np.where(zero, 0.0, base)
-    preds['E'] = np.where(zero, base, y)
+    preds['A'] = base  # reference point: the current single-stage model
+    preds['B'] = np.where(zero, 0.0, base)  # perfect "will they spend?", baseline "how much?"
+    preds['E'] = np.where(zero, base, y)  # perfect "how much?", baseline zero problem left in
     folds = list(KFold(n_splits=FOLDS, shuffle=True, random_state=SEED).split(train))
     for tr, va in folds:
         fit, val = train.iloc[tr], train.iloc[va]
+        # C, D: perfect "will they spend?" + a simple ratio rule for "how much?",
+        # i.e. is a rule from the EDA enough for the amount stage?
         preds['C'][va] = rule_prediction(fit, val, [['segment'], []])
         preds['D'][va] = rule_prediction(fit, val, [['segment', 'vip_status'], ['segment'], []])
     preds = {k: np.maximum(0.0, p) for k, p in preds.items()}
 
+    # --- Score per fold and overall; stop if A != baseline ---
+    # If A does not match the published baseline, the folds or row order are off and
+    # every other scenario would be scored on the wrong basis, so exit instead.
     rows = []
     for k, name in names.items():
         fold_scores = [_score(y[va], preds[k][va]) for _, va in folds]
@@ -132,6 +165,7 @@ def main():
                                                      for i, s in enumerate(EXPECTED_FOLDS)):
         sys.exit(f'Scenario A does not reproduce the baseline: {a.to_dict()}')
 
+    # --- Print tables and write oracle_results.md ---
     shown = summary.copy()
     for c in ['fold1', 'fold2', 'fold3', 'OOF']:
         shown[c] = shown[c].map('{:.4f}'.format)
@@ -164,6 +198,8 @@ def main():
           '']
     for k, table in buckets.items():
         md += [f'### {names[k]}', '', to_markdown(table.reset_index()), '']
+    # The tables are regenerated, but the Interpretation section is written by hand
+    # after reading the numbers; keep it so a re-run does not wipe it out.
     old = RESULTS.read_text(encoding='utf-8') if RESULTS.exists() else ''
     keep = old[old.index(INTERPRETATION):] if INTERPRETATION in old else f'{INTERPRETATION}\n\n_TODO_\n'
     RESULTS.write_text('\n'.join(md) + '\n' + keep, encoding='utf-8')
