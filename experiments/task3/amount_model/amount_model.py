@@ -337,6 +337,12 @@ def load_champion(train, base):
     if not (CHAMPION / 'task3_oof.csv').exists():
         return {'name': 'Baseline (no champion yet)'}, base
     meta = json.loads((CHAMPION / 'champion.json').read_text(encoding='utf-8'))
+    if meta.get('protocol', 'val-es') != 'val-es':
+        # This script (and the ones built on it, steps 1-13) early-stops on the scored
+        # validation fold ("val-es"); the champion was scored under another protocol, so a
+        # fold-by-fold comparison mixes protocols. See experiments/task3/LOG.md.
+        print(f'WARNING: champion "{meta["name"]}" uses protocol {meta["protocol"]}, this script uses val-es; '
+              'champion comparisons and --promote mix protocols. Use experiments/task3/tuning/ (honest-es).')
     oof = pd.read_csv(CHAMPION / 'task3_oof.csv')
     assert (oof['player_id'].to_numpy() == train['player_id'].to_numpy()).all(), 'champion OOF row order differs'
     assert np.allclose(oof['target'].to_numpy(), train[TARGET].to_numpy()), 'champion OOF targets differ'

@@ -5,7 +5,7 @@ Dates are when the result was first committed (from git history). Fold scores us
 `KFold(3, shuffle=True, random_state=342)` like the baseline unless the note says otherwise;
 metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not submitted).
 
-Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`, `refit/`, `clf_features/`, `ensemble/`, `quantile_calib/`) with its script
+Layout: each experiment has its own folder (`eda/`, `oracle/`, `amount_model/`, `refit/`, `clf_features/`, `ensemble/`, `quantile_calib/`, `tuning/`) with its script
 or notebook and its `*_results.md`; this log is shared and scripts append to it.
 
 Dependencies: the pipeline (`python run.py ...`) needs only `requirements.txt`. The experiment scripts also need
@@ -14,7 +14,15 @@ Dependencies: the pipeline (`python run.py ...`) needs only `requirements.txt`. 
 Champion: `champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
 Every experiment is compared fold by fold against both the baseline and the champion. A model is
 promoted only if it beats the champion on all 3 folds (t = 0.5 rows, never OOF-tuned ones); the
-promotion updates `champion/` and this log in the same commit. Current champion: **V4** (step 9; V3 before it, Kaggle 0.80313).
+promotion updates `champion/` and this log in the same commit. Current champion: **V4** (step 9; V3 before it, Kaggle 0.80313),
+recorded under the honest-es protocol as **V4-honest** (step 14).
+
+Protocols: steps 1–13 early-stop on the outer validation fold that is also scored (`val-es`, as in `pis/tabular.py`),
+so their OOF scores are slightly optimistic. From step 14 on, scores use `honest-es`: each outer-training part is split
+once into fit (85%) and es (15%) with seed 342 + fold (stratified on y > 0 for two-stage models), models early-stop on
+es and the validation fold is only scored; final predictions are clipped to [0, 300,000] (`cap_predictions`).
+`champion.json` names its `protocol` and keeps the old numbers under `previous_protocol`. **Compare scores only within
+one protocol.**
 
 | step | date | branch | change | fold scores | OOF | LB | note |
 |---|---|---|---|---|---|---|---|
@@ -49,3 +57,5 @@ promotion updates `champion/` and this log in the same commit. Current champion:
 | 13 | 2026-11-15 | task3/quantile-calib | V7a: V4 + 14-alpha MultiQuantile (0.01–0.50), q clipped to ≥ 0.01, prediction capped at outer-train max | 0.7987 / 0.7841 / 0.7930 | 0.7919 | — | cap at outer-train max: 8 OOF rows / 1 test rows capped; wins all folds vs baseline: yes; vs champion (V4): +0.0001 (+0.00049 / +0.00002 / -0.00036), wins all folds: no; STOP: no V7 variant beats V4 on all folds; champion stays V4, no refit, no Kaggle file |
 | 13 | 2026-11-15 | task3/quantile-calib | V7b: V7a model + in-fold coverage calibration of q (inner KFold(5) OOF), q ≥ 0.05 before remap, cap | 0.7986 / 0.7841 / 0.7931 | 0.7919 | — | cap at outer-train max: 8 OOF rows / 1 test rows capped; wins all folds vs baseline: yes; vs champion (V4): +0.0001 (+0.00046 / +0.00003 / -0.00029), wins all folds: no; calibration: 5 inner fits per fold, 718s over 3 folds; STOP: no V7 variant beats V4 on all folds; champion stays V4, no refit, no Kaggle file |
 | 13 | 2026-11-15 | task3/quantile-calib | V7: V7a + V7b (q ≥ 0.01, coverage remap, cap) | 0.7986 / 0.7841 / 0.7931 | 0.7919 | — | cap at outer-train max: 8 OOF rows / 1 test rows capped; wins all folds vs baseline: yes; vs champion (V4): +0.0001 (+0.00045 / +0.00003 / -0.00029), wins all folds: no; calibration: 5 inner fits per fold, 718s over 3 folds; STOP: no V7 variant beats V4 on all folds; champion stays V4, no refit, no Kaggle file; `quantile_calib/`; run 1043s |
+| 14 | 2026-11-15 | task3/tuning | V4-honest: V4 recipe under honest-es (fit/es 85/15 split of the outer-train part, stratified on y > 0), cap | 0.7970 / 0.7840 / 0.7926 | 0.7911 | — | protocol honest-es; old V4 (val-es) 0.7982 / 0.7841 / 0.7934, OOF 0.7918; Δ -0.0007 (-0.0011 / -0.0000 / -0.0008); best iterations clf 98/182/240, amount 731/947/608; cap: 8 OOF rows (0.7910 uncapped); **recorded in champion.json as the reference of protocol honest-es** (compare only within one protocol from here on) |
+| 14 | 2026-11-15 | task3/tuning | Baseline-honest: baseline CatBoost MAE under honest-es (plain 85/15 fit/es split), cap | 0.7830 / 0.7721 / 0.7655 | 0.7735 | — | protocol honest-es; old baseline (val-es) 0.7753, Δ -0.0018; honest baseline → V4-honest gain +0.0177 (+0.0140 / +0.0119 / +0.0270) vs +0.0165 under val-es; best iterations 998/1000/883; `tuning/honest_es.py`, run 112s |
