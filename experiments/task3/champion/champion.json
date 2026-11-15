@@ -1,24 +1,17 @@
 {
-  "name": "V3 two-stage, log-ratio amount, t=0.5",
-  "variant": "v3",
+  "name": "V4 quantile combine, q = 1 − 0.5/p, t=0.5",
+  "variant": "v4",
   "script": "experiments/task3/amount_model/amount_model.py",
-  "branch": "task3/amount-model",
-  "commit": "798a4c6",
-  "commit_note": "code commit of V3; merged into task3-staging via PR #3 (2712213). OOF regenerated on task3/v3-tuning with the refactored script, identical fold scores.",
+  "branch": "task3/quantile-combine",
+  "commit": "1f90b1d+dirty",
+  "commit_note": "HEAD when the run started; the promotion itself lands in the next commit",
   "fold_scores": [
-    0.795767,
-    0.782251,
-    0.792255
+    0.798169,
+    0.784066,
+    0.793399
   ],
-  "oof": 0.790016,
+  "oof": 0.791801,
   "date": "2026-11-15",
-  "previous_champion": "Baseline (pis/tabular.py)",
-  "rule": "promoted only if it beats the current champion on all 3 folds",
-  "lb": {
-    "date": "2026-11-15",
-    "public": 0.80313,
-    "base_public": 0.80097,
-    "delta": 0.00216,
-    "method": "task3 column swap via make_submission.py"
-  }
+  "previous_champion": "V3 two-stage, log-ratio amount, t=0.5",
+  "rule": "promoted only if it beats the current champion on all 3 folds"
 }
