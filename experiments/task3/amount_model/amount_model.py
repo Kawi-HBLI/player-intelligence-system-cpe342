@@ -247,7 +247,10 @@ def load_champion(train, base):
 def promote(variant, label, oof_frame, fold_scores, oof_score, previous):
     """Write experiments/task3/champion/ for the new champion (commit it with LOG.md)."""
     CHAMPION.mkdir(exist_ok=True)
-    oof_frame.to_csv(CHAMPION / 'task3_oof.csv', index=False)
+    # Rounded to satang (2 decimals): the file is tracked in git, and full float precision
+    # nearly doubles its size while changing fold scores by far less than 1e-4. The target
+    # is already given to 2 decimals, so rounding it is lossless.
+    oof_frame.round({'target': 2, 'prediction': 2}).to_csv(CHAMPION / 'task3_oof.csv', index=False)
     meta = {'name': label, 'variant': variant, 'script': 'experiments/task3/amount_model/amount_model.py',
             'branch': current_branch(), 'commit': current_commit(),
             'commit_note': 'HEAD when the run started; the promotion itself lands in the next commit',
