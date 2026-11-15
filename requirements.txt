@@ -4,6 +4,7 @@ scipy>=1.13
 scikit-learn>=1.5,<2
 catboost>=1.2.8,<2
 lightgbm==4.7.0
+xgboost==3.2.0
 joblib>=1.4
 Pillow>=10.4
 matplotlib>=3.9
