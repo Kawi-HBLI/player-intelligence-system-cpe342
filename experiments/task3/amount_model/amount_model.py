@@ -207,15 +207,30 @@ def tune_threshold(y, p, amount):
 # part that matters. The zero decision stays at p > 0.5 (V2/V3's OOF-tuned t was 0.500), so
 # s only changes the amount. s is chosen and scored on the same OOF: optimistic.
 
-def quantile_combine(p, log_q, prev, s=1.0):
-    """0 if p ≤ 0.5, else prev × exp(log-ratio quantile at q = 1 − s·0.5/p), q clipped to [0.05, 0.5]."""
+def interp_quantile(log_q, q, alphas=ALPHAS):
+    """Row-wise linear interpolation of row-sorted quantiles `log_q` (n × alphas) at levels q (n,)."""
+    alphas = np.asarray(alphas, dtype=float)
+    lo = np.clip(np.searchsorted(alphas, q, side='right') - 1, 0, len(alphas) - 2)
+    w = (q - alphas[lo]) / (alphas[lo + 1] - alphas[lo])
+    rows = np.arange(len(q))
+    return (1 - w) * log_q[rows, lo] + w * log_q[rows, lo + 1]
+
+
+def quantile_combine(p, log_q, prev, s=1.0, alphas=ALPHAS, q_min=None, q_map=None):
+    """0 if p ≤ 0.5, else prev × exp(log-ratio quantile at q = 1 − s·0.5/p).
+
+    q is clipped to [q_min, alphas[-1]] (q_min defaults to the lowest modelled alpha, 0.05
+    for V4). The keyword arguments are for experiments/task3/quantile_calib (V7): `alphas`
+    is the model's alpha grid, `q_map` an optional monotone remap of q (coverage
+    calibration) applied after the clip, its result clipped to the modelled alphas.
+    The defaults give V4 exactly.
+    """
+    alphas = np.asarray(alphas, dtype=float)
     log_q = np.sort(log_q, axis=1)  # enforce monotone quantiles per row
-    q = np.clip(1.0 - s * 0.5 / np.maximum(p, 1e-12), ALPHAS[0], ALPHAS[-1])
-    # Row-wise linear interpolation between the two modelled alphas around q.
-    lo = np.clip(np.searchsorted(ALPHAS, q, side='right') - 1, 0, len(ALPHAS) - 2)
-    w = (q - ALPHAS[lo]) / (ALPHAS[lo + 1] - ALPHAS[lo])
-    rows = np.arange(len(p))
-    value = (1 - w) * log_q[rows, lo] + w * log_q[rows, lo + 1]
+    q = np.clip(1.0 - s * 0.5 / np.maximum(p, 1e-12), alphas[0] if q_min is None else q_min, alphas[-1])
+    if q_map is not None:
+        q = np.clip(q_map(q), alphas[0], alphas[-1])
+    value = interp_quantile(log_q, q, alphas)  # between the two modelled alphas around q
     return np.where(p > 0.5, prev * np.exp(value), 0.0)
 
 
