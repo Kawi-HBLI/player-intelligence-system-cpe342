@@ -441,6 +441,8 @@ NEAR_COPY_SIMILARITY = 0.93  # pairs at or above this looked like the same frame
 NEAR_COPY_MIN_CONTRAST = 0.08  # near-black / washed-out frames look alike without being the same frame
 NEAR_COPY_MAX_GROUP = 5  # larger clusters were chains of unrelated dark or noisy frames
 SCENES_PER_GAME = 20  # look-alike groups per game for --split scene
+# Options that never change how a model is trained; --resume ignores them when comparing settings.
+NOT_TRAINING_SETTINGS = ('resume', 'cpu_threads', 'low_priority', 'members')
 
 
 def near_copy_groups(images: torch.Tensor, labels: np.ndarray, sha256: list[str], preprocess: Preprocess,
@@ -740,7 +742,7 @@ def main() -> None:
     best_score, best_logits = -1.0, None
     first_epoch = 0
     last_path = run_dir / 'last.pt'
-    run_settings = {k: v for k, v in vars(args).items() if k not in ('resume', 'cpu_threads', 'low_priority')}
+    run_settings = {k: v for k, v in vars(args).items() if k not in NOT_TRAINING_SETTINGS}
     if args.resume and last_path.is_file():
         # Load to CPU: random-number states must stay CPU tensors; load_state_dict moves weights to the GPU.
         state = torch.load(last_path, map_location='cpu', weights_only=False)
