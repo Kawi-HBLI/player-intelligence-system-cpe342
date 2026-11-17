@@ -95,15 +95,50 @@ def is_numeric_column(values):
     return pd.to_numeric(pd.Series(values), errors='coerce').notna().all()
 
 
+# --- Comparing two versions of a column ---------------------------------------------
+# One rule for "same value", shared by the swap report and the --from note:
+# task3 uses a tight isclose (files saved with fewer digits differ only in the
+# last bits), class columns compare exactly. astype(float) uses Python's exact
+# float parser. Text that is not a number (e.g. task4 "pube") falls back to a
+# plain string comparison, so this never raises.
+
+def same_values(task, before, after):
+    before, after = np.asarray(before, dtype=object), np.asarray(after, dtype=object)
+    try:
+        b = pd.Series(before).astype(float).to_numpy()
+        a = pd.Series(after).astype(float).to_numpy()
+    except ValueError:
+        return before == after
+    return np.isclose(b, a, rtol=1e-9, atol=1e-9) if task == 'task3' else (b == a)
+
+
 # --- Mode 1: copy columns from another full submission ----------------------------
 # Rows are matched by id, never by position, so a file sorted differently still
 # lines up correctly. Values are copied as their original text.
 
-def column_from_other(base, other, other_path, task):
+def align_other(base, other, other_path):
+    """Return the --from file reordered to the base's id order."""
     if len(other) != len(base) or set(other['id']) != set(base['id']):
         raise SwapError(f'{other_path.name}: ids differ from the base file '
                         f'({len(other)} vs {len(base)} rows); cannot match rows by id')
-    return other.set_index('id').loc[base['id'], task].to_numpy(dtype=object)
+    return other.set_index('id').loc[base['id']].reset_index()
+
+
+def note_other_differences(base, other, plan):
+    # Informational only, never fails. A teammate's file may have been built on
+    # an older base, so other columns can differ too; say so, so nobody assumes
+    # those columns are in the output (they are not: only --tasks are copied).
+    differ = {task: int((~same_values(task, base[task], other[task])).sum())
+              for task in COLUMNS[1:] if task not in plan}
+    differ = {task: n for task, n in differ.items() if n}
+    if not differ:
+        print('--from matches the base in all other columns')
+        return
+    copied = ', '.join(task for task, (kind, _) in plan.items() if kind == 'from')
+    print('Note: --from also differs from the base in columns you are NOT swapping:')
+    for task, n in differ.items():
+        print(f'  {task}: {n:,} rows differ')
+    print(f'  (only {copied} {"is" if "," not in copied else "are"} copied; these differences are ignored)')
 
 
 # --- Mode 2: map a per-task prediction file to ANS ids -----------------------------
@@ -208,13 +243,11 @@ def describe(task, values):
 
 
 def report(task, before, after):
-    # astype(float) uses Python's exact float parser. Task 3 files written with
-    # fewer digits differ in the last bits only, so those rows are counted
-    # separately instead of being reported as real changes.
-    b = pd.Series(before).astype(float).to_numpy()
-    a = pd.Series(after).astype(float).to_numpy()
-    same = np.isclose(b, a, rtol=1e-9, atol=1e-9) if task == 'task3' else (b == a)
+    # Rows that differ only in formatting or float rounding (see same_values)
+    # are counted separately instead of being reported as real changes.
+    same = same_values(task, before, after)
     changed = int((~same).sum())
+    a = np.asarray(after)
     text_only = int(((np.asarray(before) != np.asarray(after)) & same).sum())
     print(f'\n[{task}] rows changed: {changed:,} / {len(a):,}'
           + (f'  (+{text_only:,} rows differ only in formatting / float rounding)' if text_only else ''))
@@ -287,11 +320,14 @@ def main(argv=None):
     if any(out.resolve() == Path(p).resolve() for p in inputs):
         raise SwapError(f'--out {out} would overwrite an input file; choose another path')
 
-    other = read_submission(args.other)[0] if args.other else None
+    other = None
+    if args.other:
+        other = align_other(base, read_submission(args.other)[0], args.other)
+        note_other_differences(base, other, plan)
     result = base.copy()
     for task, (kind, path) in plan.items():
         if kind == 'from':
-            new = column_from_other(base, other, args.other, task)
+            new = other[task].to_numpy(dtype=object)
         else:
             mapped = column_from_prediction(int(task[-1]), path, args.data_root, args.image_root, sample)
             new = mapped.loc[base['id']].to_numpy(dtype=object)  # align by id, not position
