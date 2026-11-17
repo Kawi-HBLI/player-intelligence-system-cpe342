@@ -23,6 +23,7 @@ import csv
 import hashlib
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -48,10 +49,13 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Task 4 experiments')
-    parser.add_argument('--mode', choices=['train', 'leak-check', 'predict'], default='train',
+    parser.add_argument('--mode', choices=['train', 'leak-check', 'predict', 'ensemble'], default='train',
                         help='train = train and grade a model; leak-check = look for near-duplicate '
                              'training images that fall on both sides of the split (round 1); '
-                             'predict = label the test images with best.pt of --run-name')
+                             'predict = label the test images with best.pt of --run-name; '
+                             'ensemble = average the runs in --members and save the result as --run-name')
+    parser.add_argument('--members', default='',
+                        help='comma-separated finished runs for --mode ensemble')
     parser.add_argument('--run-name', default='r0_baseline')
     parser.add_argument('--seed', type=int, default=342)
     parser.add_argument('--epochs', type=int, default=5)
@@ -66,11 +70,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--limit', type=int, default=0,
                         help='use only the first N training images (smoke test)')
     # Round 2 options. Defaults reproduce round 0.
-    parser.add_argument('--split', choices=['hash', 'near-copy'], default='hash',
+    parser.add_argument('--split', choices=['hash', 'near-copy', 'scene'], default='hash',
                         help='hash = group byte-identical files (round 0); near-copy = also keep '
-                             'near-copies of the same frame on one side (round 1 follow-up)')
-    parser.add_argument('--aug', choices=['basic', 'strong'], default='basic',
-                        help='basic = colour jitter only; strong = rotation, hue, dark/bright, noise, blur')
+                             'near-copies of the same frame on one side (round 1 follow-up); '
+                             'scene = hold out whole groups of look-alike screens (harder exam, round 5)')
+    parser.add_argument('--aug', choices=['basic', 'strong', 'extreme'], default='basic',
+                        help='basic = colour jitter only; strong = rotation, hue, dark/bright, noise, blur; '
+                             'extreme = strong, with half of the images damaged over much wider ranges')
     parser.add_argument('--schedule', choices=['constant', 'cosine'], default='constant',
                         help='cosine = lower the learning rate smoothly towards the end')
     parser.add_argument('--label-smoothing', type=float, default=0.0)
@@ -88,6 +94,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--resume', action='store_true',
                         help='continue a stopped run from its last finished epoch (needs last.pt in the run '
                              'folder and the same settings); starts from epoch 1 if last.pt is missing')
+    # Machine options: change how much of the PC the run uses, never the result.
+    parser.add_argument('--cpu-threads', type=int, default=0,
+                        help='limit PyTorch to this many CPU threads (0 = PyTorch default, all cores)')
+    parser.add_argument('--low-priority', action='store_true',
+                        help='ask Windows to run this training below normal priority so the PC stays usable')
     return parser.parse_args()
 
 
@@ -194,27 +205,38 @@ def color_jitter(batch: torch.Tensor, strength: float) -> torch.Tensor:
 RGB_TO_YIQ = torch.tensor([[0.299, 0.587, 0.114], [0.596, -0.274, -0.322], [0.211, -0.523, 0.312]])
 
 
-def strong_augment(batch: torch.Tensor) -> torch.Tensor:
+def strong_augment(batch: torch.Tensor, extreme_share: float = 0.0) -> torch.Tensor:
     """Damage training images the way the provided training images are already damaged.
 
     Training screenshots show heavy rotation with black corners, whole-image colour
     shifts, very dark or washed-out frames, grain noise and blur. Each image gets
     its own random amount of each. Order: colour -> blur -> noise -> rotation, so
     the black corners added by rotation stay clean black as in the data.
+
+    extreme_share: fraction of images damaged with much wider ranges (--aug extreme).
+    The validation stress test showed the model breaks on the far end of these same
+    damages and on several at once; those images teach it that far end.
     """
     size, device = batch.shape[0], batch.device
+    # No random draw when the share is 0, so --aug strong keeps its exact random sequence.
+    extreme = (torch.rand(size, 1, 1, 1, device=device) < extreme_share if extreme_share > 0
+               else torch.zeros(size, 1, 1, 1, dtype=torch.bool, device=device))
+    extreme_flat = extreme.view(size)
 
-    def uniform(low: float, high: float) -> torch.Tensor:
-        return torch.empty(size, 1, 1, 1, device=device).uniform_(low, high)
+    def uniform(low: float, high: float, wide_low: float | None = None, wide_high: float | None = None) -> torch.Tensor:
+        normal = torch.empty(size, 1, 1, 1, device=device).uniform_(low, high)
+        if wide_low is None or wide_high is None:
+            return normal
+        return torch.where(extreme, torch.empty(size, 1, 1, 1, device=device).uniform_(wide_low, wide_high), normal)
 
     def gray_of(x: torch.Tensor) -> torch.Tensor:
         return 0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]
 
-    batch = batch * uniform(0.4, 1.4)                                    # dark .. bright
+    batch = batch * uniform(0.4, 1.4, 0.15, 2.2)                         # dark .. bright
     mean = gray_of(batch).mean(dim=(1, 2, 3), keepdim=True)
-    batch = (batch - mean) * uniform(0.6, 1.5) + mean                    # contrast
+    batch = (batch - mean) * uniform(0.6, 1.5, 0.3, 2.5) + mean          # contrast
     gray = gray_of(batch)
-    batch = ((batch - gray) * uniform(0.3, 1.7) + gray).clamp(0, 1)      # saturation
+    batch = ((batch - gray) * uniform(0.3, 1.7, 0.0, 3.0) + gray).clamp(0, 1)   # saturation
     # Hue: rotate the two colour axes of YIQ space by a random angle (luminance unchanged).
     to_yiq = RGB_TO_YIQ.to(device)
     angle = torch.empty(size, device=device).uniform_(-np.pi, np.pi)
@@ -232,12 +254,24 @@ def strong_augment(batch: torch.Tensor) -> torch.Tensor:
         kernel = (kernel_1d[:, None] * kernel_1d[None, :])
         kernel = (kernel / kernel.sum()).expand(3, 1, 5, 5)
         batch[blur] = F.conv2d(F.pad(batch[blur], (2, 2, 2, 2), mode='replicate'), kernel, groups=3)
-    batch = (batch + torch.randn_like(batch) * uniform(0.0, 0.10)).clamp(0, 1)   # grain noise
+    if extreme_share > 0:
+        # Heavier blur (sigma 2.5) on about 40% of the extreme images.
+        heavy = extreme_flat & (torch.rand(size, device=device) < 0.4)
+        if heavy.any():
+            kernel_1d = torch.exp(-torch.arange(-7, 8, device=device, dtype=batch.dtype) ** 2 / (2 * 2.5 ** 2))
+            kernel = (kernel_1d[:, None] * kernel_1d[None, :])
+            kernel = (kernel / kernel.sum()).expand(3, 1, 15, 15)
+            batch[heavy] = F.conv2d(F.pad(batch[heavy], (7, 7, 7, 7), mode='replicate'), kernel, groups=3)
+    batch = (batch + torch.randn_like(batch) * uniform(0.0, 0.10, 0.0, 0.30)).clamp(0, 1)   # grain noise
     # Rotation (+-30 degrees) and zoom on about 70% of images; outside area becomes black.
     height, width = batch.shape[2], batch.shape[3]
     turn = torch.empty(size, device=device).uniform_(-np.pi / 6, np.pi / 6)
     turn = torch.where(torch.rand(size, device=device) < 0.7, turn, torch.zeros_like(turn))
     zoom = torch.empty(size, device=device).uniform_(0.9, 1.15)
+    if extreme_share > 0:
+        # Extreme images: rotation up to +-60 degrees (always) and zoom 0.7 .. 1.8.
+        turn = torch.where(extreme_flat, torch.empty(size, device=device).uniform_(-np.pi / 3, np.pi / 3), turn)
+        zoom = torch.where(extreme_flat, torch.empty(size, device=device).uniform_(0.7, 1.8), zoom)
     theta = torch.zeros(size, 2, 3, device=device)
     theta[:, 0, 0] = torch.cos(turn) / zoom
     theta[:, 0, 1] = -torch.sin(turn) * height / width / zoom
@@ -259,7 +293,12 @@ class Preprocess:
         batch = batch_u8.to(self.device, non_blocking=True).float().div_(255)
         batch = F.interpolate(batch, size=self.size, mode='bilinear', align_corners=False)
         if train:
-            batch = strong_augment(batch) if self.aug == 'strong' else color_jitter(batch, self.jitter)
+            if self.aug == 'extreme':
+                batch = strong_augment(batch, extreme_share=0.5)
+            elif self.aug == 'strong':
+                batch = strong_augment(batch)
+            else:
+                batch = color_jitter(batch, self.jitter)
         batch = (batch - self.mean) / self.std
         return batch.contiguous(memory_format=torch.channels_last)
 
@@ -401,6 +440,7 @@ def leak_check(images: torch.Tensor, labels: np.ndarray, sha256: list[str], fit_
 NEAR_COPY_SIMILARITY = 0.93  # pairs at or above this looked like the same frame in closest_pairs.jpg
 NEAR_COPY_MIN_CONTRAST = 0.08  # near-black / washed-out frames look alike without being the same frame
 NEAR_COPY_MAX_GROUP = 5  # larger clusters were chains of unrelated dark or noisy frames
+SCENES_PER_GAME = 20  # look-alike groups per game for --split scene
 
 
 def near_copy_groups(images: torch.Tensor, labels: np.ndarray, sha256: list[str], preprocess: Preprocess,
@@ -461,6 +501,36 @@ def near_copy_groups(images: torch.Tensor, labels: np.ndarray, sha256: list[str]
     return groups, stats
 
 
+def scene_groups(images: torch.Tensor, labels: np.ndarray, preprocess: Preprocess, batch_size: int,
+                 seed: int) -> tuple[list[str], dict]:
+    """Group id per training image so that whole scenes are held out together.
+
+    Images of each game are clustered into SCENES_PER_GAME look-alike groups (k-means on
+    ImageNet ResNet18 features). A whole group lands on one side of the split, so the
+    model is graded on kinds of screens it never saw while learning. This is a harder
+    exam than near-copy, meant to imitate screenshots from unseen play sessions.
+    Uses training images only.
+    """
+    from sklearn.cluster import KMeans
+
+    cache = EXP_ROOT / 'cache' / 'resnet18_imagenet_features.npy'
+    features = None
+    if cache.is_file():
+        cached = np.load(cache)
+        if len(cached) == len(images):
+            features = cached.astype(np.float32)
+    if features is None:
+        features = frozen_features(images, preprocess, batch_size).cpu().numpy().astype(np.float32)
+    features /= np.linalg.norm(features, axis=1, keepdims=True)
+    groups = [''] * len(images)
+    for game in range(NUM_CLASSES):
+        members = np.flatnonzero(labels == game)
+        scenes = KMeans(min(SCENES_PER_GAME, len(members)), n_init=3, random_state=seed).fit_predict(features[members])
+        for member, scene in zip(members, scenes):
+            groups[member] = f'scene-{game}-{scene}'
+    return groups, {'scene_groups': len(set(groups))}
+
+
 def predict_test(run_dir: Path, device: torch.device) -> None:
     """Label every test image with best.pt of a finished run.
 
@@ -493,9 +563,62 @@ def predict_test(run_dir: Path, device: torch.device) -> None:
                 outputs.append(model(preprocess(batch, train=False)).float().cpu().numpy())
     logits = np.concatenate(outputs)
     np.save(run_dir / 'test_logits.npy', logits)
-    predicted = logits.argmax(1)
     print(f'      {len(test):,} test images labelled in {time.perf_counter() - start:.0f}s', flush=True)
+    write_test_outputs(run_dir, test, logits.argmax(1))
 
+
+def ensemble_test(run_dir: Path, members: list[str], device: torch.device) -> None:
+    """Average the softmax of several finished runs on test (soft voting, equal weights).
+
+    Members are chosen before looking at any ensemble score. When all members were graded
+    on the same validation images, the ensemble's validation score is printed too. Members
+    trained on different splits are allowed (they add variety); then the ensemble is scored
+    only on the images every member held out, a small sample. Test images are only
+    labelled, never used to choose anything.
+    """
+    if len(members) < 2:
+        raise SystemExit('--members needs at least two run names, e.g. --members r3d_lr2e-4,r3d_lr3e-4')
+    member_dirs = [EXP_ROOT / name for name in members]
+    labels_all = pd.read_csv(TASK_DIR / 'train.csv')['label'].to_numpy(dtype=int)
+    val_sets = [np.load(member_dir / 'val_idx.npy') for member_dir in member_dirs]
+    same_split = all(np.array_equal(val_set, val_sets[0]) for val_set in val_sets)
+    val_probs, test_probs = [], []
+    for member_dir, val_idx in zip(member_dirs, val_sets):
+        member_val = torch.softmax(torch.from_numpy(np.load(member_dir / 'val_logits.npy')).float(), 1).numpy()
+        val_probs.append(member_val)
+        print(f'      {member_dir.name:18s} macro F1 on its own validation {macro_f1(labels_all[val_idx], member_val.argmax(1)):.4f}')
+        if not (member_dir / 'test_logits.npy').is_file():
+            predict_test(member_dir, device)
+        test_probs.append(torch.softmax(torch.from_numpy(np.load(member_dir / 'test_logits.npy')).float(), 1).numpy())
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if same_split:
+        val_mean = np.mean(val_probs, axis=0)
+        print(f'      ensemble ({len(members)} runs) validation macro F1 '
+              f'{macro_f1(labels_all[val_sets[0]], val_mean.argmax(1)):.4f}')
+        np.save(run_dir / 'val_probs.npy', val_mean)
+    else:
+        # Only images held out by every member are unseen by all of them; score the ensemble on those.
+        common = np.array(sorted(set.intersection(*(set(val_set.tolist()) for val_set in val_sets))))
+        if len(common):
+            picked = [probs[[np.flatnonzero(val_set == image)[0] for image in common]]
+                      for probs, val_set in zip(val_probs, val_sets)]
+            print(f'      ensemble ({len(members)} runs) macro F1 on the {len(common):,} images no member learned '
+                  f'{macro_f1(labels_all[common], np.mean(picked, axis=0).argmax(1)):.4f} (small sample: rough only)')
+        else:
+            print(f'      ensemble ({len(members)} runs): no image was held out by every member, '
+                  f'so the combined score cannot be measured locally')
+    test_mean = np.mean(test_probs, axis=0)
+    np.save(run_dir / 'test_probs.npy', test_mean)
+    (run_dir / 'members.txt').write_text('\n'.join(members) + '\n', encoding='utf-8')
+    write_test_outputs(run_dir, pd.read_csv(TASK_DIR / 'test.csv'), test_mean.argmax(1))
+
+
+def macro_f1(truth: np.ndarray, predicted: np.ndarray) -> float:
+    return float(f1_score(truth, predicted, average='macro', zero_division=0))
+
+
+def write_test_outputs(run_dir: Path, test: pd.DataFrame, predicted: np.ndarray) -> None:
+    """Team prediction file plus a ready-to-upload copy of baseline/submission.csv (task4 replaced)."""
     stems = test['file_name'].str.replace(r'\.[A-Za-z0-9]+$', '', regex=True)
     team_dir = REPO_ROOT / 'outputs' / 'main'
     team_dir.mkdir(parents=True, exist_ok=True)
@@ -522,6 +645,16 @@ def predict_test(run_dir: Path, device: torch.device) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.cpu_threads:
+        torch.set_num_threads(args.cpu_threads)
+    if args.low_priority:
+        import ctypes
+        if sys.platform == 'win32':  # BELOW_NORMAL_PRIORITY_CLASS; handles are 64-bit, so declare the types
+            kernel32 = ctypes.windll.kernel32
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            if not kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00004000):
+                print('      warning: could not lower the process priority', flush=True)
     if not torch.cuda.is_available():
         raise SystemExit('CUDA is not available. Install a CUDA build of PyTorch (e.g. the .venv-gpu environment)')
     device = torch.device('cuda')
@@ -530,6 +663,10 @@ def main() -> None:
     run_dir = EXP_ROOT / args.run_name
     if args.mode == 'predict':
         predict_test(run_dir, device)
+        return
+    if args.mode == 'ensemble':
+        print(f'=== Task 4 ensemble "{args.run_name}" ===', flush=True)
+        ensemble_test(run_dir, [name.strip() for name in args.members.split(',') if name.strip()], device)
         return
     results_file = EXP_ROOT / 'results.csv'
     if args.resume and results_file.is_file() and args.run_name in set(pd.read_csv(results_file)['run_name']):
@@ -558,6 +695,10 @@ def main() -> None:
         print(f'      near-copies kept together: {split_stats["near_copy_groups"]} groups, '
               f'{split_stats["images_in_near_copy_groups"]} images '
               f'({split_stats["rejected_clusters"]} unreliable clusters ignored)')
+    elif args.split == 'scene':
+        groups, split_stats = scene_groups(images, labels, preprocess, args.batch_size, args.seed)
+        print(f'      whole scenes kept together: {split_stats["scene_groups"]} look-alike groups '
+              f'({SCENES_PER_GAME} per game)')
     splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=args.seed)
     fit_idx, val_idx = list(splitter.split(np.zeros(len(labels)), labels, groups=groups))[args.fold]
     print(f'      fold {args.fold}: learn on {len(fit_idx):,} images, grade on {len(val_idx):,} images (validation)',
@@ -599,7 +740,7 @@ def main() -> None:
     best_score, best_logits = -1.0, None
     first_epoch = 0
     last_path = run_dir / 'last.pt'
-    run_settings = {k: v for k, v in vars(args).items() if k != 'resume'}
+    run_settings = {k: v for k, v in vars(args).items() if k not in ('resume', 'cpu_threads', 'low_priority')}
     if args.resume and last_path.is_file():
         # Load to CPU: random-number states must stay CPU tensors; load_state_dict moves weights to the GPU.
         state = torch.load(last_path, map_location='cpu', weights_only=False)
