@@ -24,6 +24,35 @@ es and the validation fold is only scored; final predictions are clipped to [0, 
 `champion.json` names its `protocol` and keeps the old numbers under `previous_protocol`. **Compare scores only within
 one protocol.**
 
+## Reproduce the final Task 3 predictions
+
+The final Task 3 model is the V8 refit. It can be rebuilt from the repo alone: no Optuna, no `outputs/` from another
+machine. `v8_cv.py` rebuilds V8's CV (honest-es classifier p, OOF, per-fold test predictions) from
+`tuning/v8.json` and checks the fold scores against `champion/champion.json`; `refit.py` then trains on the full train.
+From a fresh clone, with the competition data in `../cpe342-kaggle-main` (see the root README):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe experiments/task3/tuning/v8_cv.py --threads 12
+.\.venv\Scripts\python.exe experiments/task3/refit/refit.py --variant v8 --threads 12
+```
+
+- `v8_cv.py` must print `OK: V8 reproduced within 0.0001 on every fold` (expected 0.798653 / 0.784773 / 0.793209,
+  OOF 0.792138); it writes `outputs/experiments/task3_v8/` and `outputs/experiments/task3_v4_honest/classifier_p.npz`.
+- `refit.py` must pass all 7 checks; it writes `outputs/experiments/task3_v8_refit/task3_predictions.csv`, the Task 3
+  column of the final submission. Expected sanity numbers: sum 270,049,550 THB, median of non-zero 2,848.09,
+  Spearman vs CV 0.9966 (as in `refit/refit_v8_results.md`).
+- `--threads 12` matters: CatBoost on CPU builds slightly different trees with a different thread count, and V8 was
+  recorded with 12. With 12 threads the CV is exact (OOF identical to `champion/task3_oof.csv`). With 16 threads the
+  classifier early-stopped at 95 / 106 / 273 instead of 98 / 182 / 240 and the fold scores moved by up to 4e-5,
+  still within the 1e-4 check. The classifier p is cached, so after changing `--threads` delete
+  `outputs/experiments/task3_v4_honest/classifier_p.npz`.
+- Runtime on a 16-thread laptop with `--threads 12`: `v8_cv.py` about 2 min (classifier 8 s, amount model
+  30–42 s per fold), `refit.py` about 5 min (fold-1 check 52 s, each of the 3 seeds about 75 s).
+- `refit.py` rewrites `refit/refit_v8_results.md` (runtimes, and it drops the Determinism section when no earlier
+  refit file exists); `git checkout` it unless the results changed.
+
 | step | date | branch | change | fold scores | OOF | LB | note |
 |---|---|---|---|---|---|---|---|
 | 1 | 2026-11-10 | main | Baseline: CatBoost MAE, 1000 iters, depth 6, lr 0.05, ES 80 | 0.7873 / 0.7587 / 0.7807 | 0.7753 | — | `pis/tabular.py`, `baseline/task3_oof.csv`; LB only as part of the full submission |

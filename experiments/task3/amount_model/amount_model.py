@@ -96,10 +96,23 @@ COMPONENT_NAMES = {'clf': 'classifier depth 6, lr 0.05', 'clf_deep': 'classifier
                    'mq': 'amount log-ratio MultiQuantile, 3000 iters'}
 
 
+# CatBoost thread_count for every model built with cb_params: -1 = all cores. Scripts with a
+# --threads option change it through set_threads() before training anything.
+THREADS = -1
+
+
+def set_threads(threads):
+    """Set CatBoost's thread_count for every later cb_params() call (-1 = all cores)."""
+    global THREADS
+    if threads == 0 or threads < -1:
+        raise ValueError('threads must be -1 (all cores) or a positive number')
+    THREADS = threads
+
+
 def cb_params(iterations, fold, **overrides):
     """Baseline CatBoost settings (pis/tabular.py), seed shifted per fold like the baseline."""
     params = dict(iterations=iterations, depth=6, learning_rate=0.05, random_seed=SEED + fold,
-                  thread_count=-1, verbose=False, allow_writing_files=False, early_stopping_rounds=80)
+                  thread_count=THREADS, verbose=False, allow_writing_files=False, early_stopping_rounds=80)
     return {**params, **overrides}
 
 

@@ -13,8 +13,10 @@ Both: iterations = mean CV best iteration × 1.2, seeds 342-344, and final predi
 clipped with amount_model.cap_predictions to [0, full-train max target] (300,000).
 
 Run from the repo root:
-    python experiments/task3/refit/refit.py [--variant v4|v8]
-Prints the iterations used, the runtime of every fit, the fold-1 check and the sanity
+    python experiments/task3/refit/refit.py [--variant v4|v8] [--threads N]
+--threads sets CatBoost's thread_count (default -1 = all cores). On a fresh clone, v8 first
+needs its CV outputs: python experiments/task3/tuning/v8_cv.py (rebuilds them from v8.json).
+Prints the elapsed time of every step, the iterations used, the runtime of every fit, the fold-1 check and the sanity
 table; writes outputs/experiments/task3_<variant>_refit/task3_predictions.csv (capped) and
 task3_predictions_uncapped.csv (gitignored) only if every check passes, plus the results
 file (refit_results.md for v4, refit_v8_results.md for v8) and one row in
@@ -42,8 +44,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'amount_model'))
 from amount_model import (AMOUNTS, CHAMPION, CLASSIFIERS, COMPONENT_NAMES, MQ_LOSS, N_TEST, OUT,  # noqa: E402
                           RESULTS, TWO_STAGE, add_features, cap_predictions, cb_params, current_branch,
-                          fold_expected_spend, log_ratio, prev_or_one, quantile_combine, upsert_log,
-                          with_prev_flag)
+                          fold_expected_spend, log_ratio, prev_or_one, quantile_combine, set_threads,
+                          upsert_log, with_prev_flag)
 from oracle import FOLDS, SEED, TARGET, to_markdown  # noqa: E402  (on sys.path via amount_model)
 from pis.common import DEFAULT_DATA  # noqa: E402
 from pis.tabular import _prepare, _score  # noqa: E402
@@ -152,7 +154,7 @@ def cv_test_p(variant, train, test, x, xt, categorical, y, folds, cv):
     if variant == 'v8':
         path = OUT / 'task3_v4_honest' / 'classifier_p.npz'
         if not path.exists():
-            sys.exit(f'{path.relative_to(ROOT)} not found; run experiments/task3/tuning/honest_es.py')
+            sys.exit(f'{path.relative_to(ROOT)} not found; run experiments/task3/tuning/v8_cv.py')
         p_cv = np.load(path)['p_test'].mean(axis=0)
     else:
         p_cv = np.zeros(len(test))
@@ -171,12 +173,26 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--variant', choices=sorted(VARIANTS), default='v4')
+    parser.add_argument('--threads', type=int, default=-1, help='CatBoost thread_count (default -1 = all cores)')
     args = parser.parse_args()
+    set_threads(args.threads)
     cfg = VARIANTS[args.variant]
+    t_start = t_step = time.time()
+    steps = []  # [step, seconds]
+
+    def step_done(name):
+        nonlocal t_step
+        now = time.time()
+        steps.append([name, now - t_step])
+        print(f'[{now - t_step:6.0f}s] {name}', flush=True)
+        t_step = now
+
     out_dir = OUT / f'task3_{args.variant}_refit'
     champion = json.loads((CHAMPION / 'champion.json').read_text(encoding='utf-8'))
     if not cfg['cv_pred'].exists():
-        sys.exit(f'{cfg["cv_pred"].relative_to(ROOT)} not found; run the {cfg["name"]} CV first')
+        how = ('python experiments/task3/tuning/v8_cv.py' if args.variant == 'v8'
+               else 'python experiments/task3/amount_model/amount_model.py --variants v4')
+        sys.exit(f'{cfg["cv_pred"].relative_to(ROOT)} not found; run the {cfg["name"]} CV first: {how}')
     best_cv, amount_params, cv_fold1, cv_name = setup(args.variant, champion)
     n_iter = {comp: round(np.mean(best) * EXTRA) for comp, best in best_cv.items()}
     names = {**COMPONENT_NAMES, **({AMT: 'amount log-ratio MultiQuantile, V8 settings (limit 5000)'}
@@ -186,6 +202,7 @@ def main():
               f'× {EXTRA} -> {n_iter[comp]} iterations')
     if amount_params:
         print(f'amount settings: {amount_params}')
+    print(f'CatBoost threads: {"all cores" if args.threads == -1 else args.threads}')
 
     # --- Data: same filter and preprocessing as amount_model.py / pis/tabular.py ---
     train = pd.read_csv(DEFAULT_DATA / '03_regression' / 'train.csv')
@@ -195,6 +212,7 @@ def main():
     y = train[TARGET].to_numpy(dtype=float)
     folds = list(KFold(n_splits=FOLDS, shuffle=True, random_state=SEED).split(x))
     timings = []  # [fit, model, iterations, seconds]
+    step_done('data + folds')
 
     # --- Fold-1 check: does the fixed-iteration rule (no early stopping) hold up? ---
     # Refit with the same rule on fold 1's training part only, score on fold 1's
@@ -213,12 +231,14 @@ def main():
     fold1_ok = abs(fold1 - cv_fold1) <= FOLD1_TOL
     print(f'fold-1 check: refit rule {fold1:.4f} vs {cv_name} {cv_fold1:.4f} (Δ {fold1 - cv_fold1:+.4f}, '
           f'tolerance ±{FOLD1_TOL}) -> {"OK" if fold1_ok else "FAIL"}', flush=True)
+    step_done('fold-1 check')
 
     # --- The variant's CV test p, for the sanity table ---
     cv = pd.read_csv(cfg['cv_pred'], float_precision='round_trip')
     assert (cv['player_id'].to_numpy() == test['player_id'].to_numpy()).all(), 'CV file not in test.csv order'
     p_cv, p_cv_ok = cv_test_p(args.variant, train, test, x, xt, categorical, y, folds, cv)
     print(f'{cfg["name"]} CV test p: matches the saved file\'s zero pattern: {p_cv_ok}', flush=True)
+    step_done(f'{cfg["name"]} CV test p')
 
     # --- Full refit, 3 seeds ---
     # expected_spend: inner KFold(5) out-of-fold on the full train for the training rows,
@@ -237,6 +257,7 @@ def main():
         p_ref += p / len(SEED_OFFSETS)
         q_ref = q_ref + q / len(SEED_OFFSETS)
         print(f'seed {SEED + offset}: classifier {tc:.0f}s, amount {tr_:.0f}s', flush=True)
+        step_done(f'full refit, seed {SEED + offset}')
     # Post-processing cap (amount_model.cap_predictions): clip to [0, full-train max target].
     raw_pred = quantile_combine(p_ref, q_ref, prev_or_one(test))
     pred = cap_predictions(raw_pred, y)
@@ -333,6 +354,9 @@ def main():
             '`refit/`, not promoted (champion rule needs fold scores)')
     upsert_log([[datetime.date.today().isoformat(), current_branch(), cfg['log'], '—', '— (not measurable)', '—', note]])
     print(f'Wrote {cfg["results"].relative_to(ROOT)}; updated experiments/task3/LOG.md')
+    step_done('sanity checks + write files')
+    print('\nElapsed per step\n' + '\n'.join(f'  {name:<32} {sec:7.0f}s' for name, sec in steps)
+          + f'\n  {"total":<32} {time.time() - t_start:7.0f}s')
     if not ok:
         sys.exit(1)
 
