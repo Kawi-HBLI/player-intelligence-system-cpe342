@@ -13,7 +13,9 @@ The tool never edits the base file, never touches task code, and refuses to
 leave an output behind that the repo validator rejects.
 """
 import argparse
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +30,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from pis.common import DEFAULT_DATA, TASKS, image_folder  # noqa: E402
 from pis.submission import (  # noqa: E402
+    TASK4_CLASS_INDEX,
     _ids,  # private helper, used on purpose: pis/ must not be edited for this tool.
     read_template,
     task4_image_keys,
@@ -37,6 +40,11 @@ from pis.submission import (  # noqa: E402
 
 COLUMNS = ['id'] + [f'task{i}' for i in range(1, 6)]
 CLASS_LABELS = {'task1': {0, 1}, 'task2': {0, 1, 2, 3}, 'task4': {0, 1, 2, 3, 4}, 'task5': {0, 1}}
+MISSING_TEXT = {'', 'nan', 'na', 'n/a', 'null', 'none'}
+# Printed after every class-column report. The shares describe *test*
+# predictions; tuning anything on them leaks test information into the model.
+SHARE_WARNING = ('For sanity checks only. Never use these test-prediction shares to adjust a '
+                 'model (class weights, thresholds, priors): the TA counts that as pseudo-labeling.')
 
 
 class SwapError(Exception):
@@ -87,12 +95,14 @@ def raw_fields(path, sep):
     return [line.rstrip('\r').split(sep) for line in text.split('\n') if line != '']
 
 
-# --- Task 4 label format ---------------------------------------------------------
-# Kaggle scores Task 4 as integers 0-4. A submission with text labels
-# ("freefried") scored lower, so a column is only accepted in the base format.
-
 def is_numeric_column(values):
-    return pd.to_numeric(pd.Series(values), errors='coerce').notna().all()
+    return pd.to_numeric(pd.Series(values, dtype=object), errors='coerce').notna().all()
+
+
+def whole_number_text(values):
+    # Class labels are written as "3", never "3.0": one format in every swapped
+    # class column, whichever mode or file it came from (Mode 2 already does this).
+    return np.array([str(int(float(v))) for v in values], dtype=object)
 
 
 # --- Comparing two versions of a column ---------------------------------------------
@@ -114,7 +124,8 @@ def same_values(task, before, after):
 
 # --- Mode 1: copy columns from another full submission ----------------------------
 # Rows are matched by id, never by position, so a file sorted differently still
-# lines up correctly. Values are copied as their original text.
+# lines up correctly. task3 is copied as its original text; class columns are
+# normalized to whole numbers in main() after they pass check_column.
 
 def align_other(base, other, other_path):
     """Return the --from file reordered to the base's id order."""
@@ -154,10 +165,15 @@ def column_from_prediction(task_num, pred_path, data_root, image_root, sample):
         raise SwapError(f'File not found: {pred_path}')
     prediction = pd.read_csv(pred_path, dtype={'player_id': str})  # same read as assemble()
     folder, _ = TASKS[task_num]
-    try:
-        task_root = image_folder(root, image_root) if task_num == 4 else root / folder
-    except FileNotFoundError as exc:
-        raise SwapError(f'Task 4: {exc}') from None
+    if task_num == 4 and image_root is not None and (Path(image_root) / 'test.csv').is_file():
+        # Only test.csv is needed to map predictions; image_folder() also wants
+        # train.csv, which a teammate who only has the test metadata may not have.
+        task_root = Path(image_root)
+    else:
+        try:
+            task_root = image_folder(root, image_root) if task_num == 4 else root / folder
+        except FileNotFoundError as exc:
+            raise SwapError(f'Task 4: {exc}') from None
     test_path = task_root / 'test.csv'
     if not test_path.is_file():
         raise SwapError(f'Task {task_num}: {test_path} not found (set --data-root / --image-root)')
@@ -198,48 +214,71 @@ def _to_float_text(value):
     try:
         return repr(float(value))
     except ValueError:
-        return ''  # caught by check_column as "missing or not numeric"
+        return value  # left as is: check_column reports it as missing or non-numeric
 
 
 # --- Per-task checks ----------------------------------------------------------------
 # Run on the new column before anything is written, so a bad file is caught with
 # a message that names the task, not just by the generic validator afterwards.
+# Order matters for clear messages: missing -> non-numeric -> non-finite -> range.
+# Only the new values are judged; the base column is used just for a task4 note.
 
-def check_column(task, new_values, base_values):
-    numbers = pd.to_numeric(pd.Series(new_values), errors='coerce')
-    if task == 'task3':
-        if numbers.isna().any():
-            raise SwapError('task3: some values are missing or not numeric')
-        if not np.isfinite(numbers).all() or (numbers < 0).any():
-            raise SwapError('task3: values must be finite and >= 0')
-        return
-    if task == 'task4':
-        base_numeric = is_numeric_column(base_values)
-        new_numeric = numbers.notna().all()
-        if base_numeric != new_numeric:
-            raise SwapError(
-                'task4: label format mismatch. The base column is '
-                f'{"numeric 0-4" if base_numeric else "text"} but the new column is '
-                f'{"numeric" if new_numeric else "text"}. Kaggle scores Task 4 as numeric 0-4 '
-                '(a text submission scored lower), so convert the labels first.')
-        if not base_numeric:
-            raise SwapError('task4: the base column holds text labels; Kaggle expects numeric 0-4. '
-                            'Fix the base file first.')
+def check_column(task, new_values, base_values=None):
+    text = pd.Series(new_values, dtype=object).astype(str).str.strip()
+    missing = text.str.lower().isin(MISSING_TEXT)
+    if missing.any():
+        raise SwapError(f'{task}: {int(missing.sum()):,} missing values (blank or NaN); '
+                        'every row needs a prediction')
+    numbers = pd.to_numeric(text, errors='coerce')
     if numbers.isna().any():
-        raise SwapError(f'{task}: some values are missing or not numeric')
+        examples = sorted(set(text[numbers.isna()]))[:3]
+        if task == 'task4':
+            mapping = ', '.join(f'{name}={index}' for name, index in TASK4_CLASS_INDEX.items())
+            raise SwapError(f'task4: label format mismatch: the new labels are text (e.g. {examples}). '
+                            'Kaggle scores Task 4 as numeric 0-4 (a text submission scored lower), '
+                            f'so convert the labels first ({mapping}).')
+        raise SwapError(f'{task}: {int(numbers.isna().sum()):,} non-numeric values, e.g. {examples}')
+    numbers = numbers.to_numpy(dtype=float)
+    if not np.isfinite(numbers).all():
+        raise SwapError(f'{task}: {int((~np.isfinite(numbers)).sum()):,} non-finite values (inf / -inf)')
+    if task == 'task3':
+        if (numbers < 0).any():
+            raise SwapError(f'task3: {int((numbers < 0).sum()):,} negative values; spending must be >= 0')
+        return
     if not np.equal(numbers, np.floor(numbers)).all() or not set(numbers.astype(int)) <= CLASS_LABELS[task]:
         raise SwapError(f'{task}: labels must be in {sorted(CLASS_LABELS[task])}, '
-                        f'found {sorted(set(numbers))}')
+                        f'found {sorted(set(numbers.tolist()))}')
+    if task == 'task4' and base_values is not None and not is_numeric_column(base_values):
+        print('Note: the base task4 column was text (not numeric); it is replaced by numeric 0-4 '
+              'labels, the format Kaggle scores.')
+
+
+def tool_checks(path, base_ids):
+    """Whole-file checks the tool can run on its own (no data folder needed).
+
+    Mirrors pis.submission.validate_frame without the template: columns, ids
+    equal to the base ids in the same order, label sets, task3 finite and >= 0.
+    """
+    frame, _ = read_submission(path)  # columns + unique non-blank ids
+    if frame['id'].tolist() != list(base_ids):
+        raise SwapError('Tool checks: output ids or their order differ from the base file')
+    for task in COLUMNS[1:]:
+        try:
+            check_column(task, frame[task])
+        except SwapError as exc:
+            raise SwapError(f'Tool checks failed on the output: {exc}') from None
 
 
 # --- Report -------------------------------------------------------------------------
 
 def describe(task, values):
-    numbers = pd.to_numeric(pd.Series(values), errors='coerce')
+    numbers = pd.to_numeric(pd.Series(values, dtype=object), errors='coerce')
     if task == 'task3':
         return f'sum={numbers.sum():,.2f}  median={numbers.median():,.4f}  zero_share={(numbers == 0).mean():.2%}'
-    counts = numbers.astype(int).value_counts().sort_index()
-    return '  '.join(f'{label}:{count} ({count / len(numbers):.1%})' for label, count in counts.items())
+    # A base column can hold text (e.g. an old task4 file); count its raw labels.
+    labels = numbers.astype(int) if numbers.notna().all() else pd.Series(values, dtype=object)
+    counts = labels.value_counts().sort_index()
+    return '  '.join(f'{label}:{count} ({count / len(labels):.1%})' for label, count in counts.items())
 
 
 def report(task, before, after):
@@ -253,6 +292,8 @@ def report(task, before, after):
           + (f'  (+{text_only:,} rows differ only in formatting / float rounding)' if text_only else ''))
     print(f'  before: {describe(task, before)}')
     print(f'  after : {describe(task, after)}')
+    if task != 'task3':
+        print(f'  {SHARE_WARNING}')
 
 
 # --- Command line ---------------------------------------------------------------------
@@ -273,7 +314,10 @@ def parse_args(argv):
     parser.add_argument('--pred', action='append', default=[], metavar='taskN=PATH',
                         help='per-task prediction csv (player_id, prediction); repeatable')
     parser.add_argument('--out', type=Path, help='output file (default outputs/kaggle/<base>__<tasks>.csv)')
-    parser.add_argument('--data-root', type=Path, default=DEFAULT_DATA, help='Kaggle data folder (for --pred and validation)')
+    # default=None (not DEFAULT_DATA) so main() can tell "not given" from "given":
+    # only a missing *default* folder may fall back to Mode 1 without data.
+    parser.add_argument('--data-root', type=Path, default=None,
+                        help=f'Kaggle data folder (needed for --pred; default {DEFAULT_DATA})')
     parser.add_argument('--image-root', type=Path, help='Task 4 dataset root, if not under --data-root')
     return parser.parse_args(argv)
 
@@ -306,12 +350,30 @@ def main(argv=None):
     args = parse_args(argv)
     plan = plan_swaps(args)
     base, style = read_submission(args.base)
+
+    # --- Template: the data folder, or (Mode 1 only) the base file itself ----------
+    # Mode 1 only copies columns between two full submissions, so it does not
+    # need the Kaggle data: if the *default* data folder is absent, the base ids
+    # act as the template and the tool's own checks replace the repo validator.
+    # An explicit --data-root that is missing is still an error (likely a typo),
+    # and Mode 2 always needs the data folder for each task's test.csv.
+    data_root = args.data_root or DEFAULT_DATA
     try:
-        sample, _ = read_template(args.data_root)
+        sample, _ = read_template(data_root)
+        have_data = True
     except FileNotFoundError:
-        raise SwapError(f'sample_submission.csv not found under {args.data_root} (set --data-root)') from None
+        if args.data_root is not None:
+            raise SwapError(f'sample_submission.csv not found under {data_root} (set --data-root)') from None
+        pred_tasks = [task for task, (kind, _) in plan.items() if kind == 'pred']
+        if pred_tasks:
+            raise SwapError(f'--pred {", ".join(pred_tasks)} needs the Kaggle data folder '
+                            f'(sample_submission.csv and test.csv); not found at {data_root}. '
+                            'Set --data-root.') from None
+        sample, have_data = base[['id']].copy(), False
+    except ValueError as exc:
+        raise SwapError(f'{data_root}: {exc}') from None
     if set(sample.id.astype(str)) != set(base['id']):
-        raise SwapError(f'{args.base.name}: ids differ from the template in {args.data_root}')
+        raise SwapError(f'{args.base.name}: ids differ from the template in {data_root}')
 
     # Output path: default name records which columns were swapped. Refuse to
     # write over any input, so the base (often the best Kaggle file) is safe.
@@ -329,35 +391,51 @@ def main(argv=None):
         if kind == 'from':
             new = other[task].to_numpy(dtype=object)
         else:
-            mapped = column_from_prediction(int(task[-1]), path, args.data_root, args.image_root, sample)
+            mapped = column_from_prediction(int(task[-1]), path, data_root, args.image_root, sample)
             new = mapped.loc[base['id']].to_numpy(dtype=object)  # align by id, not position
         check_column(task, new, base[task].to_numpy())
+        if task != 'task3':
+            new = whole_number_text(new)
         result[task] = new
         report(task, base[task].to_numpy(), new)
 
-    write_submission(result, style, out)
-
-    # --- Post-write checks -------------------------------------------------------
-    # 1) Untouched columns: compare the literal text of every field in the output
-    #    with the base file (header included), so "byte for byte" is checked, not assumed.
-    # 2) Repo validator: the same check `python run.py validate --file` runs.
-    # Either failure deletes the output so nobody uploads a broken file.
+    # --- Atomic write ---------------------------------------------------------------
+    # Write to a temporary file next to --out, check that file, and only then
+    # move it over --out (os.replace is atomic on the same folder). A failed run
+    # therefore never deletes or changes an existing good output.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp_name = tempfile.mkstemp(dir=out.parent, prefix=f'.{out.stem}.', suffix='.tmp.csv')
+    os.close(handle)
+    tmp = Path(tmp_name)
     try:
-        base_rows, out_rows = raw_fields(args.base, style['sep']), raw_fields(out, style['sep'])
+        write_submission(result, style, tmp)
+
+        # --- Checks on the written file --------------------------------------------
+        # 1) Untouched columns: compare the literal text of every field with the
+        #    base file (header included), so "byte for byte" is checked, not assumed.
+        # 2) Tool checks: columns, ids, label sets, task3 finite and >= 0.
+        # 3) Repo validator (`python run.py validate --file`), when the data folder exists.
+        base_rows, out_rows = raw_fields(args.base, style['sep']), raw_fields(tmp, style['sep'])
         keep = [i for i, col in enumerate(COLUMNS) if col not in plan]
         if len(base_rows) != len(out_rows) or any(
                 [b[i] for i in keep] != [o[i] for i in keep] for b, o in zip(base_rows, out_rows)):
             raise SwapError('Untouched columns are not identical to the base file')
-        try:
-            validate_file(out, args.data_root, args.image_root)
-        except ValueError as exc:
-            raise SwapError(f'Repo validator rejected the output: {exc}') from None
-    except SwapError:
-        out.unlink(missing_ok=True)
-        raise
+        tool_checks(tmp, base['id'])
+        if have_data:
+            try:
+                validate_file(tmp, data_root, args.image_root)
+            except ValueError as exc:
+                raise SwapError(f'Repo validator rejected the output: {exc}') from None
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op after a successful replace
+
     untouched = ', '.join(c for c in COLUMNS[1:] if c not in plan)
     print(f'\nUntouched columns identical to base: {untouched or "(none)"}')
-    print(f'Validator: OK ({len(result):,} rows)')
+    if have_data:
+        print(f'Validator: OK ({len(result):,} rows)')
+    else:
+        print(f'Repo validator skipped (no data folder found); tool checks passed ({len(result):,} rows)')
     print(f'Wrote {out}')
     return 0
 

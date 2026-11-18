@@ -2,7 +2,9 @@
 
 The fake data root holds only what the tool reads: sample_submission.csv (for
 read_template / validate_file) and 03_regression/test.csv (for --pred task3).
-Only the "invalid output is deleted" test patches anything (validate_file).
+Patched with unittest.mock: validate_file (to force a validator failure) and
+swap.DEFAULT_DATA (pointed at a missing folder for the no-data-folder tests,
+because the real default folder may exist on a teammate's machine).
 """
 import contextlib
 import io
@@ -62,20 +64,26 @@ class SwapSubmissionTests(unittest.TestCase):
         path.write_bytes(text.encode(encoding))
         return path
 
-    def run_tool(self, *args, base=None):
+    def run_tool(self, *args, base=None, data_root=True):
         stdout = io.StringIO()
+        root_args = ['--data-root', str(self.data)] if data_root else []
         with contextlib.redirect_stdout(stdout):
             swap.main(['--base', str(base or self.base), '--out', str(self.out),
-                       '--data-root', str(self.data), *map(str, args)])
+                       *root_args, *map(str, args)])
         return stdout.getvalue()
 
-    def assert_fails(self, *args, message=None):
-        with self.assertRaises(swap.SwapError) as caught, contextlib.redirect_stdout(io.StringIO()):
-            swap.main(['--base', str(self.base), '--out', str(self.out),
-                       '--data-root', str(self.data), *map(str, args)])
-        self.assertFalse(self.out.exists(), 'a failed swap must not leave an output file')
+    def assert_fails(self, *args, message=None, base=None, data_root=True, keep_output=False):
+        before = self.out.read_bytes() if self.out.exists() else None
+        with self.assertRaises(swap.SwapError) as caught:
+            self.run_tool(*args, base=base, data_root=data_root)
+        if keep_output:
+            self.assertEqual(self.out.read_bytes(), before, 'a failed run must not change a good output')
+        else:
+            self.assertFalse(self.out.exists(), 'a failed swap must not leave an output file')
+        self.assertEqual(list(self.root.glob('*.tmp.csv')), [], 'temporary file left behind')
         if message:
             self.assertIn(message, str(caught.exception))
+        return caught.exception
 
     # --- Mode 1 -----------------------------------------------------------------
 
@@ -158,6 +166,86 @@ class SwapSubmissionTests(unittest.TestCase):
         other = self.write('other.csv', csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
         with mock.patch.object(swap, 'validate_file', side_effect=ValueError('forced failure')):
             self.assert_fails('--from', other, '--tasks', 'task4', message='forced failure')
+
+    # --- Review fixes (PR #14) --------------------------------------------------------
+
+    def test_mode1_class_labels_normalized_to_whole_numbers(self):  # item 1
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task2', ['3.0', '0.0', '2.0', '1.0', '3', '0'])))
+        output = self.run_tool('--from', other, '--tasks', 'task2')
+        self.assertEqual(self.out.read_text(), csv_text(ROWS))  # "3.0" -> "3": same text as the base
+        self.assertIn('[task2] rows changed: 0', output)
+
+    def test_failed_rerun_keeps_existing_good_output(self):  # item 2
+        good = self.write('good.csv', csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
+        self.run_tool('--from', good, '--tasks', 'task4')
+        bad = self.write('bad.csv', csv_text(set_field(ROWS, 'task1', ['0', '1', '2', '0', '1', '0'])))
+        self.assert_fails('--from', bad, '--tasks', 'task1', keep_output=True)  # fails before writing
+        with mock.patch.object(swap, 'validate_file', side_effect=ValueError('forced failure')):
+            self.assert_fails('--from', good, '--tasks', 'task4', keep_output=True,
+                              message='forced failure')  # fails after the temp file is written
+
+    def test_mode1_without_data_folder_uses_base_ids(self):  # item 3
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
+        with mock.patch.object(swap, 'DEFAULT_DATA', self.root / 'missing'):
+            output = self.run_tool('--from', other, '--tasks', 'task4', data_root=False)
+            self.assertIn('Repo validator skipped (no data folder found); tool checks passed', output)
+            self.assertEqual(self.out.read_text(), csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
+            # Tool checks still run without the validator.
+            self.out.unlink()
+            bad = self.write('bad.csv', csv_text(set_field(ROWS, 'task5', ['0', '1', '5', '0', '1', '0'])))
+            self.assert_fails('--from', bad, '--tasks', 'task5', data_root=False, message='task5: labels')
+            # Mode 2 still needs the data folder.
+            pred = self.write('p.csv', 'player_id,prediction\nP001,1.0\n')
+            self.assert_fails('--pred', f'task3={pred}', data_root=False, message='needs the Kaggle data folder')
+        # An explicit --data-root that does not exist is still an error.
+        self.assert_fails('--from', other, '--tasks', 'task4', '--data-root', self.root / 'typo',
+                          data_root=False, message='sample_submission.csv not found')
+
+    def test_mode2_task4_image_root_with_only_test_csv(self):  # item 4
+        images = self.root / 'Task4'
+        images.mkdir()
+        ans = [row.split(',')[0] for row in ROWS]
+        order = [2, 0, 5, 1, 4, 3]  # test.csv rows in a different order from the ANS ids
+        (images / 'test.csv').write_text('id,file_name\n' + ''.join(
+            f'{ans[i]},img{i}.jpg\n' for i in order), encoding='utf-8')
+        labels = ['pube', 'roblock', 'fiveN', '7-11k', 'freefried', 'pube']  # for ANS rows 1..6
+        pred = self.write('task4_predictions.csv', 'player_id,prediction\n' + ''.join(
+            f'img{i},{labels[i]}\n' for i in range(6)))
+        self.assertFalse((images / 'train.csv').exists())
+        self.run_tool('--pred', f'task4={pred}', '--image-root', images)
+        self.assertEqual(self.out.read_text(), csv_text(set_field(ROWS, 'task4', ['3', '4', '1', '0', '2', '3'])))
+
+    def test_blank_value_reports_missing(self):  # item 5
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task2', ['0', '', '2', '1', '3', '0'])))
+        self.assert_fails('--from', other, '--tasks', 'task2', message='task2: 1 missing values')
+        other4 = self.write('other4.csv', csv_text(set_field(ROWS, 'task4', ['0', '', '2', '1', '3', '0'])))
+        error = self.assert_fails('--from', other4, '--tasks', 'task4', message='task4: 1 missing values')
+        self.assertNotIn('text', str(error))
+
+    def test_inf_in_class_column_is_swap_error(self):  # item 5
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task1', ['0', 'inf', '1', '-inf', '1', '0'])))
+        self.assert_fails('--from', other, '--tasks', 'task1', message='task1: 2 non-finite values')
+
+    def test_numeric_task4_into_text_base(self):  # item 5
+        text = ['pube', 'roblock', 'fiveN', '7-11k', 'freefried', 'pube']
+        base = self.write('text_base.csv', csv_text(set_field(ROWS, 'task4', text)))
+        numeric = set_field(ROWS, 'task4', ['3', '4', '1', '0', '2', '3'])
+        other = self.write('other.csv', csv_text(numeric))
+        output = self.run_tool('--from', other, '--tasks', 'task4', base=base)
+        self.assertIn('the base task4 column was text', output)
+        self.assertEqual(self.out.read_text(), csv_text(numeric))
+
+    def test_share_warning_after_class_columns_only(self):  # item 6
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task1', ['0'] * 6)))
+        task3 = [row.split(',')[3] for row in ROWS]
+        pred = self.write('t3.csv', 'player_id,prediction\n' + ''.join(f'{p},{v}\n' for p, v in zip(PLAYERS, task3)))
+        output = self.run_tool('--from', other, '--tasks', 'task1', '--pred', f'task3={pred}')
+        warning = ('For sanity checks only. Never use these test-prediction shares to adjust a model '
+                   '(class weights, thresholds, priors): the TA counts that as pseudo-labeling.')
+        self.assertEqual(output.count(warning), 1)
+        task1_block = output.split('[task1]')[1].split('[task3]')[0]
+        self.assertIn(warning, task1_block)
+        self.assertNotIn(warning, output.split('[task3]')[1])
 
 
 if __name__ == '__main__':
