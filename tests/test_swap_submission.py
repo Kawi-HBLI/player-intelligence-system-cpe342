@@ -8,6 +8,8 @@ because the real default folder may exist on a teammate's machine).
 """
 import contextlib
 import io
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -234,6 +236,76 @@ class SwapSubmissionTests(unittest.TestCase):
         output = self.run_tool('--from', other, '--tasks', 'task4', base=base)
         self.assertIn('the base task4 column was text', output)
         self.assertEqual(self.out.read_text(), csv_text(numeric))
+
+    # --- Follow-up: task4 no-data fallback, --no-shares, file mode ------------------
+
+    def make_task4(self, ans_ids=True):
+        """Image folder with only test.csv, plus a matching task4 prediction file."""
+        images = self.root / 'Task4'
+        images.mkdir()
+        ans = [row.split(',')[0] for row in ROWS]
+        order = [2, 0, 5, 1, 4, 3]
+        lines = (f'{ans[i]},img{i}.jpg\n' for i in order) if ans_ids else (f'img{i}.jpg,x\n' for i in order)
+        header = 'id,file_name\n' if ans_ids else 'id,extra\n'  # old layout: id = image name
+        (images / 'test.csv').write_text(header + ''.join(lines), encoding='utf-8')
+        labels = ['pube', 'roblock', 'fiveN', '7-11k', 'freefried', 'pube']
+        pred = self.write('task4_predictions.csv', 'player_id,prediction\n' + ''.join(
+            f'img{i},{labels[i]}\n' for i in range(6)))
+        return images, pred
+
+    def test_mode2_task4_without_data_folder_uses_base_ids(self):
+        images, pred = self.make_task4()
+        with mock.patch.object(swap, 'DEFAULT_DATA', self.root / 'missing'):
+            output = self.run_tool('--pred', f'task4={pred}', '--image-root', images, data_root=False)
+        self.assertIn('Repo validator skipped (no data folder found); tool checks passed', output)
+        self.assertEqual(self.out.read_text(), csv_text(set_field(ROWS, 'task4', ['3', '4', '1', '0', '2', '3'])))
+
+    def test_mode2_task4_without_data_folder_needs_ans_id_column(self):
+        images, pred = self.make_task4(ans_ids=False)
+        with mock.patch.object(swap, 'DEFAULT_DATA', self.root / 'missing'):
+            self.assert_fails('--pred', f'task4={pred}', '--image-root', images, data_root=False,
+                              message='needs a Task 4 test.csv with id (ANS) and file_name')
+            # A tabular --pred next to task4 still needs the data folder.
+            images_ok = self.root / 'ok'
+            images_ok.mkdir()
+            (images_ok / 'test.csv').write_text((images / 'test.csv').read_text().replace('id,extra', 'id,file_name'))
+            t3 = self.write('t3.csv', 'player_id,prediction\nP001,1.0\n')
+            self.assert_fails('--pred', f'task4={pred}', '--pred', f'task3={t3}', '--image-root', images_ok,
+                              data_root=False, message='--pred task3 needs the Kaggle data folder')
+
+    def test_no_shares_prints_only_rows_changed(self):
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task1', ['0'] * 6)))
+        task3 = [row.split(',')[3] for row in ROWS]
+        pred = self.write('t3.csv', 'player_id,prediction\n' + ''.join(f'{p},{v}\n' for p, v in zip(PLAYERS, task3)))
+        output = self.run_tool('--from', other, '--tasks', 'task1', '--pred', f'task3={pred}', '--no-shares')
+        self.assertIn('[task1] rows changed: 3 / 6', output)
+        self.assertIn('[task3] rows changed: 0 / 6', output)
+        for hidden in ('before:', 'after :', swap.SHARE_WARNING, 'sum='):
+            self.assertNotIn(hidden, output)
+
+    def test_output_mode_matches_base(self):
+        os.chmod(self.base, 0o640)
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
+        self.run_tool('--from', other, '--tasks', 'task4')
+        self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), stat.S_IMODE(self.base.stat().st_mode))
+        if os.name == 'posix':  # Windows only tracks the read-only bit
+            self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o640)
+
+    def test_output_mode_falls_back_to_644(self):
+        other = self.write('other.csv', csv_text(set_field(ROWS, 'task4', ['1'] * 6)))
+        real_chmod = os.chmod
+        calls = []
+
+        def flaky_chmod(path, mode):  # first call (copy base mode) fails, fallback succeeds
+            calls.append(mode)
+            if len(calls) == 1:
+                raise PermissionError('denied')
+            real_chmod(path, mode)
+
+        with mock.patch.object(swap.os, 'chmod', side_effect=flaky_chmod):
+            self.run_tool('--from', other, '--tasks', 'task4')
+        self.assertEqual(calls[-1], 0o644)
+        self.assertTrue(self.out.exists())
 
     def test_share_warning_after_class_columns_only(self):  # item 6
         other = self.write('other.csv', csv_text(set_field(ROWS, 'task1', ['0'] * 6)))

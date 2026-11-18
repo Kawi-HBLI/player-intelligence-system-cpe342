@@ -14,6 +14,7 @@ leave an output behind that the repo validator rejects.
 """
 import argparse
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -89,6 +90,20 @@ def write_submission(frame, style, path):
     path.write_bytes(body.encode('utf-8-sig' if style['bom'] else 'utf-8'))
 
 
+def copy_mode(source, target):
+    # mkstemp creates 0600 files on Linux/Mac, so a replaced output would be
+    # unreadable for teammates and tools that share the folder. Give it the
+    # base file's permissions instead (owner-write kept, so the next run can
+    # replace it and Windows can delete a failed temp file), or 0644 if that fails.
+    try:
+        os.chmod(target, stat.S_IMODE(os.stat(source).st_mode) | stat.S_IWUSR)
+    except OSError:
+        try:
+            os.chmod(target, 0o644)
+        except OSError as exc:
+            print(f'Note: could not set the output file mode ({exc}); the file is still written.')
+
+
 def raw_fields(path, sep):
     """Each data line split into its literal text fields (used for the byte check)."""
     text = Path(path).read_bytes().decode('utf-8-sig')
@@ -159,22 +174,37 @@ def note_other_differences(base, other, plan):
 # looked up by player_id), Task 4 joins on the file_name column and, when the
 # fixed test.csv has an ANS `id` column, on that id.
 
+def task4_test_csv(data_root, image_root):
+    """Path of the Task 4 test.csv (image metadata)."""
+    if image_root is not None and (Path(image_root) / 'test.csv').is_file():
+        # Only test.csv is needed to map predictions; image_folder() also wants
+        # train.csv, which a teammate who only has the test metadata may not have.
+        return Path(image_root) / 'test.csv'
+    try:
+        return image_folder(Path(data_root), image_root) / 'test.csv'
+    except FileNotFoundError as exc:
+        raise SwapError(f'Task 4: {exc}') from None
+
+
+def task4_has_ans_ids(data_root, image_root):
+    # The fixed Task 4 test.csv (12 Nov data fix) names the ANS id of every image
+    # (`id` + `file_name` columns, the same condition assemble() joins on), so it
+    # maps predictions without sample_submission.csv. The old layout (`id` holds
+    # the image name) relies on template row order and still needs the data folder.
+    try:
+        columns = pd.read_csv(task4_test_csv(data_root, image_root), nrows=0).columns
+    except SwapError:
+        return False
+    return 'id' in columns and 'file_name' in columns
+
+
 def column_from_prediction(task_num, pred_path, data_root, image_root, sample):
     root = Path(data_root)
     if not pred_path.is_file():
         raise SwapError(f'File not found: {pred_path}')
     prediction = pd.read_csv(pred_path, dtype={'player_id': str})  # same read as assemble()
     folder, _ = TASKS[task_num]
-    if task_num == 4 and image_root is not None and (Path(image_root) / 'test.csv').is_file():
-        # Only test.csv is needed to map predictions; image_folder() also wants
-        # train.csv, which a teammate who only has the test metadata may not have.
-        task_root = Path(image_root)
-    else:
-        try:
-            task_root = image_folder(root, image_root) if task_num == 4 else root / folder
-        except FileNotFoundError as exc:
-            raise SwapError(f'Task 4: {exc}') from None
-    test_path = task_root / 'test.csv'
+    test_path = task4_test_csv(root, image_root) if task_num == 4 else root / folder / 'test.csv'
     if not test_path.is_file():
         raise SwapError(f'Task {task_num}: {test_path} not found (set --data-root / --image-root)')
     test = pd.read_csv(test_path)
@@ -281,7 +311,7 @@ def describe(task, values):
     return '  '.join(f'{label}:{count} ({count / len(labels):.1%})' for label, count in counts.items())
 
 
-def report(task, before, after):
+def report(task, before, after, shares=True):
     # Rows that differ only in formatting or float rounding (see same_values)
     # are counted separately instead of being reported as real changes.
     same = same_values(task, before, after)
@@ -290,6 +320,8 @@ def report(task, before, after):
     text_only = int(((np.asarray(before) != np.asarray(after)) & same).sum())
     print(f'\n[{task}] rows changed: {changed:,} / {len(a):,}'
           + (f'  (+{text_only:,} rows differ only in formatting / float rounding)' if text_only else ''))
+    if not shares:  # --no-shares: rows changed only, no distributions (and so no warning)
+        return
     print(f'  before: {describe(task, before)}')
     print(f'  after : {describe(task, after)}')
     if task != 'task3':
@@ -319,6 +351,8 @@ def parse_args(argv):
     parser.add_argument('--data-root', type=Path, default=None,
                         help=f'Kaggle data folder (needed for --pred; default {DEFAULT_DATA})')
     parser.add_argument('--image-root', type=Path, help='Task 4 dataset root, if not under --data-root')
+    parser.add_argument('--no-shares', action='store_true',
+                        help='print only rows changed per column, no before/after distributions')
     return parser.parse_args(argv)
 
 
@@ -351,12 +385,14 @@ def main(argv=None):
     plan = plan_swaps(args)
     base, style = read_submission(args.base)
 
-    # --- Template: the data folder, or (Mode 1 only) the base file itself ----------
-    # Mode 1 only copies columns between two full submissions, so it does not
-    # need the Kaggle data: if the *default* data folder is absent, the base ids
+    # --- Template: the data folder, or the base file itself -------------------------
+    # Mode 1 only copies columns between two full submissions, and Mode 2 for
+    # task4 can join on the ANS ids in the fixed Task 4 test.csv, so neither needs
+    # sample_submission.csv: if the *default* data folder is absent, the base ids
     # act as the template and the tool's own checks replace the repo validator.
     # An explicit --data-root that is missing is still an error (likely a typo),
-    # and Mode 2 always needs the data folder for each task's test.csv.
+    # and Mode 2 for tabular tasks always needs the data folder (row order of
+    # each task's test.csv is the only link to the ANS ids).
     data_root = args.data_root or DEFAULT_DATA
     try:
         sample, _ = read_template(data_root)
@@ -365,10 +401,14 @@ def main(argv=None):
         if args.data_root is not None:
             raise SwapError(f'sample_submission.csv not found under {data_root} (set --data-root)') from None
         pred_tasks = [task for task, (kind, _) in plan.items() if kind == 'pred']
-        if pred_tasks:
-            raise SwapError(f'--pred {", ".join(pred_tasks)} needs the Kaggle data folder '
+        tabular = [task for task in pred_tasks if task != 'task4']
+        if tabular:
+            raise SwapError(f'--pred {", ".join(tabular)} needs the Kaggle data folder '
                             f'(sample_submission.csv and test.csv); not found at {data_root}. '
                             'Set --data-root.') from None
+        if pred_tasks and not task4_has_ans_ids(data_root, args.image_root):
+            raise SwapError('--pred task4 without the Kaggle data folder needs a Task 4 test.csv with '
+                            'id (ANS) and file_name columns (pass --image-root); otherwise set --data-root.') from None
         sample, have_data = base[['id']].copy(), False
     except ValueError as exc:
         raise SwapError(f'{data_root}: {exc}') from None
@@ -397,7 +437,7 @@ def main(argv=None):
         if task != 'task3':
             new = whole_number_text(new)
         result[task] = new
-        report(task, base[task].to_numpy(), new)
+        report(task, base[task].to_numpy(), new, shares=not args.no_shares)
 
     # --- Atomic write ---------------------------------------------------------------
     # Write to a temporary file next to --out, check that file, and only then
@@ -409,6 +449,7 @@ def main(argv=None):
     tmp = Path(tmp_name)
     try:
         write_submission(result, style, tmp)
+        copy_mode(args.base, tmp)
 
         # --- Checks on the written file --------------------------------------------
         # 1) Untouched columns: compare the literal text of every field with the
