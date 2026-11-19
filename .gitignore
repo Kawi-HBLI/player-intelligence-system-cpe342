@@ -24,4 +24,4 @@ cpe342-kaggle-main/
 !baseline/*.csv
 
 # Task 3 champion OOF is tracked so every experiment can compare against it fold by fold.
-!experiments/task3/champion/*.csv
+!experiments/task3/model/champion/*.csv

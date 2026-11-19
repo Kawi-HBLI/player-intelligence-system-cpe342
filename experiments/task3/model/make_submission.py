@@ -5,9 +5,9 @@ start from a submission whose score we already know and swap in new Task 3 predi
 any score change then comes from Task 3 alone.
 
 Run from the repo root:
-    python experiments/task3/make_submission.py --base <submission.csv> [--task3 <task3_predictions.csv>] [--out <file>]
+    python experiments/task3/model/make_submission.py --base <submission.csv> [--task3 <task3_predictions.csv>] [--out <file>]
 --task3 defaults to the current champion's test predictions
-(experiments/task3/champion/champion.json -> outputs/experiments/task3_<variant>/task3_predictions.csv).
+(experiments/task3/model/champion/champion.json -> outputs/experiments/task3_<variant>/task3_predictions.csv).
 --out defaults to outputs/kaggle/<base-stem>_task3_<variant>.csv. The result is checked
 with the repo's validator (pis/submission.py); the script exits non-zero if it fails.
 """
@@ -29,8 +29,8 @@ from pis.submission import read_template, validate_file  # noqa: E402
 from pis.tabular import _score  # noqa: E402
 
 # --- Settings ---
-TASK3 = Path(__file__).resolve().parent
-CHAMPION = TASK3 / 'champion'
+MODEL = Path(__file__).resolve().parent  # experiments/task3/model/
+CHAMPION = MODEL / 'champion'
 OUTPUTS = ROOT / 'outputs'
 COLUMNS = ['id'] + [f'task{i}' for i in range(1, 6)]
 N_ROWS = 25_889
@@ -53,13 +53,13 @@ def champion_predictions():
     path, oof_path = folder / 'task3_predictions.csv', folder / 'task3_oof.csv'
     if not path.exists() or not oof_path.exists():
         fail(f'{path.relative_to(ROOT)} not found. Run amount_model.py first: '
-             f'python experiments/task3/amount_model/amount_model.py --variants {meta["variant"]}')
+             f'python experiments/task3/model/amount_model/amount_model.py --variants {meta["variant"]}')
     oof = pd.read_csv(oof_path)
     local = _score(oof['target'].to_numpy(), oof['prediction'].to_numpy())
     if abs(local - meta['oof']) > 1e-4:
         fail(f'{oof_path.relative_to(ROOT)} scores OOF {local:.4f} but the champion has {meta["oof"]:.4f}; '
              f'outputs/ was overwritten by another run (e.g. --quick). Re-run: '
-             f'python experiments/task3/amount_model/amount_model.py --variants {meta["variant"]}')
+             f'python experiments/task3/model/amount_model/amount_model.py --variants {meta["variant"]}')
     return path, meta['variant']
 
 

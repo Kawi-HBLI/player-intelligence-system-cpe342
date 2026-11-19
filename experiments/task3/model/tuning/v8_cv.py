@@ -17,7 +17,7 @@ outputs/experiments/task3_v8/task3_predictions.csv (test, averaged over the 3 fo
 and task3_oof.csv, where refit.py --variant v8 reads them. Nothing tracked is written.
 
 Run from the repo root:
-    python experiments/task3/tuning/v8_cv.py [--threads N]
+    python experiments/task3/model/tuning/v8_cv.py [--threads N]
 --threads sets CatBoost's thread_count (default -1 = all cores). CatBoost on CPU builds
 slightly different trees with a different thread count. V8 was recorded with 12 threads:
 --threads 12 reproduces it exactly (classifier best iterations 98 / 182 / 240, OOF equal to
@@ -144,7 +144,7 @@ def main():
     assert len(oof) == len(d.y) and abs(_score(d.y, oof['prediction'].to_numpy()) - res['score']) < 1e-12
     steps.done('write predictions')
     print(f'\nOK: V8 reproduced within {TOL:g} on every fold. Wrote {(V8_DIR / "task3_predictions.csv").relative_to(ROOT)} '
-          f'and task3_oof.csv; next: python experiments/task3/refit/refit.py --variant v8')
+          f'and task3_oof.csv; next: python experiments/task3/model/refit/refit.py --variant v8')
     print(steps.summary())
 
 
