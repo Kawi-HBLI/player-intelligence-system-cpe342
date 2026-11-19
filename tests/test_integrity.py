@@ -152,6 +152,36 @@ class IntegrityTests(unittest.TestCase):
         self.assertTrue(p_shift[30:55].mean() > 0.85)
         self.assertTrue(p_shift[60:].mean() < 0.05)
 
+    def test_v2_views_find_coordinated_shift_and_hidden_corner_group(self):
+        rng = np.random.default_rng(11)
+        n = 4000
+        cols = {}
+        for fam in ('m_a', 'm_b', 'm_c', 'm_d', 'm_e', 'm_f'):
+            base = rng.uniform(1.0, 5.0, n)
+            for p in range(1, 5):
+                cols[f'{fam}_{p}'] = base + rng.normal(0, 0.3, n)
+        frame = pd.DataFrame(cols)
+        # rows 0..39: period-4 jump in three families at once
+        for fam in ('m_a', 'm_b', 'm_c'):
+            frame.loc[:39, f'{fam}_4'] += 4.0
+        # rows 40..159: compact group in the joint upper corner of m_e and m_f, inside their ranges
+        for fam in ('m_e', 'm_f'):
+            for p in range(1, 5):
+                frame.loc[40:159, f'{fam}_{p}'] = 4.85 + rng.normal(0, 0.05, 120)
+
+        views = score_anomalies(frame, seed=5, profile='quick', method='v2')
+        self.assertGreater(views['shift_prob'][:40].min(), 0.5)
+        self.assertEqual([sorted(g['features']) for g in views['dependency_groups']], [['m_e', 'm_f']])
+        self.assertGreater(float((views['density_ratio_prob'][40:160] > 0.5).mean()), 0.9)
+        pred, _, _, _ = select_expected_macro_f3(views['anomaly_probability'])
+        self.assertGreaterEqual(int(pred[:160].sum()), 150)
+        self.assertLess(int(pred[160:].sum()), 40)
+
+        v1 = score_anomalies(frame, seed=5, profile='quick', method='v1')
+        self.assertIn('anomaly_probability', v1)
+        with self.assertRaises(ValueError):
+            score_anomalies(frame, method='v3')
+
     def test_select_expected_macro_f3_handles_null_and_high_posterior(self):
         pred_zero, k_zero, _, _ = select_expected_macro_f3(np.zeros(500))
         self.assertEqual(k_zero, 0)

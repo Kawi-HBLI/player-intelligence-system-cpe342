@@ -1,5 +1,6 @@
 """Task 5: unsupervised multi-view anomaly detection calibrated for Macro-F3."""
 from pathlib import Path
+import itertools
 import re
 import logging
 import warnings
@@ -7,10 +8,12 @@ import warnings
 import joblib
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.isotonic import IsotonicRegression
 from sklearn.model_selection import KFold
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
 from .common import write_json
@@ -20,11 +23,18 @@ LOG = logging.getLogger(__name__)
 SECURITY_FLAGS = ('password_changed', 'vpn_usage', 'suspicious_login_time', 'mass_item_sale')
 _GEO_FAMILIES = {'login_lat', 'login_lon'}
 _STATIC_LEVEL_COLS = ('account_age_days', 'behavior_stability')
+_GEO_SCORE_FAMILIES = {'login_lat', 'login_lon', 'geo_hav'}
+METHODS = ('v1', 'v2')
 
+# v1 keys drive the residual HGB density ratio; v2 keys drive the surprise shift view
+# (column-permuted null copies) and the dependency-group view (kNN size, null copies).
 _PROFILE_CONFIG = {
-    'quick': {'n_splits': 3, 'n_bags': 1, 'n_proj': 90, 'max_iter': 120, 'max_bins': 63, 'n_rep': 2, 'n_eval_null': 1},
-    'balanced': {'n_splits': 5, 'n_bags': 2, 'n_proj': 120, 'max_iter': 140, 'max_bins': 63, 'n_rep': 2, 'n_eval_null': 2},
-    'strong': {'n_splits': 5, 'n_bags': 3, 'n_proj': 140, 'max_iter': 160, 'max_bins': 63, 'n_rep': 3, 'n_eval_null': 2},
+    'quick': {'n_splits': 3, 'n_bags': 1, 'n_proj': 90, 'max_iter': 120, 'max_bins': 63, 'n_rep': 2, 'n_eval_null': 1,
+              'shift_null_rep': 2, 'dep_k': 40, 'dep_null_rep': 3},
+    'balanced': {'n_splits': 5, 'n_bags': 2, 'n_proj': 120, 'max_iter': 140, 'max_bins': 63, 'n_rep': 2, 'n_eval_null': 2,
+                 'shift_null_rep': 4, 'dep_k': 60, 'dep_null_rep': 5},
+    'strong': {'n_splits': 5, 'n_bags': 3, 'n_proj': 140, 'max_iter': 160, 'max_bins': 63, 'n_rep': 3, 'n_eval_null': 2,
+               'shift_null_rep': 8, 'dep_k': 60, 'dep_null_rep': 8},
 }
 
 
@@ -102,6 +112,16 @@ def shift_score(frame):
     return pd.Series(np.log1p(top).sum(axis=1) + 0.5 * flags).rank(method='average', pct=True).to_numpy()
 
 
+def _is_multiplicative(v):
+    """True when change size between periods 1 and 2 grows with the baseline level (Spearman > 0.2)."""
+    p1, p2 = v.iloc[:, 0], v.iloc[:, 1]
+    valid12 = p1.notna() & p2.notna()
+    if int(valid12.sum()) > 20 and float(v.min().min()) >= 0.0 and float(np.nanmedian(v.to_numpy())) > 0.1:
+        corr = ((p1[valid12] + p2[valid12]) / 2.0).corr((p2[valid12] - p1[valid12]).abs(), method='spearman')
+        return bool(np.isfinite(corr) and abs(corr) > 0.20)
+    return False
+
+
 def extract_multiview_features(frame):
     """Build level features and MAD-standardized within-player shift magnitudes.
 
@@ -117,13 +137,7 @@ def extract_multiview_features(frame):
         warnings.simplefilter('ignore', RuntimeWarning)
         for fam in families:
             v = frame[[f'{fam}_{i}' for i in range(1, 5)]].astype(float)
-            p1, p2 = v.iloc[:, 0], v.iloc[:, 1]
-            valid12 = p1.notna() & p2.notna()
-            is_mult = False
-            if int(valid12.sum()) > 20 and float(v.min().min()) >= 0.0 and float(np.nanmedian(v.to_numpy())) > 0.1:
-                corr = ((p1[valid12] + p2[valid12]) / 2.0).corr((p2[valid12] - p1[valid12]).abs(), method='spearman')
-                is_mult = bool(np.isfinite(corr) and abs(corr) > 0.20)
-            lv = np.log1p(v.clip(lower=0.0)) if is_mult else v
+            lv = np.log1p(v.clip(lower=0.0)) if _is_multiplicative(v) else v
             if fam in _GEO_FAMILIES:
                 continue
             level_dict[fam] = lv.mean(axis=1, skipna=True)
@@ -382,6 +396,358 @@ def residual_density_ratio(features_df, bg_mask, cfg, seed=342):
     return oof_real_sum, p_anom, bg_scale
 
 
+# --------------------------------------------------------------------------------------
+# v2 views: per-family surprise for temporal shifts, and dependency groups in copula space
+# --------------------------------------------------------------------------------------
+
+def shift_statistics(frame):
+    """|robust z| of the last-period (d4) and second-half (dh) change for every 4-period family.
+
+    Multiplicative families are log1p-transformed (same rule as `extract_multiview_features`).
+    Latitude and longitude get their own statistics (longitude unwrapped around period 1), so a
+    location jump is still seen when the other coordinate is missing; the max pairwise
+    haversine jump is added as `geo_hav|max`. Columns are named `<family>|<stat>`; the surprise
+    step scores the three location statistics as one `geo` family.
+    """
+    out = {}
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        for fam in _complete_families(frame):
+            v = frame[[f'{fam}_{i}' for i in range(1, 5)]].astype(float)
+            if fam == 'login_lon':
+                base = v.iloc[:, 0]
+                v = v.apply(lambda col: base + ((col - base + 180.0) % 360.0) - 180.0)
+            lv = np.log1p(v.clip(lower=0.0)) if _is_multiplicative(v) else v
+            d4 = lv.iloc[:, 3] - lv.iloc[:, :3].mean(axis=1, skipna=True)
+            dh = lv.iloc[:, 2:4].mean(axis=1, skipna=True) - lv.iloc[:, :2].mean(axis=1, skipna=True)
+            for name, ser in (('d4', d4), ('dh', dh)):
+                arr = ser.to_numpy(dtype=float)
+                med, mad = _robust_scale(arr)
+                out[f'{fam}|{name}'] = np.abs((arr - med) / mad)
+        if all(f'login_lat_{i}' in frame and f'login_lon_{i}' in frame for i in range(1, 5)):
+            hmax = pd.concat([
+                _haversine_km(frame[f'login_lat_{i}'], frame[f'login_lon_{i}'], frame[f'login_lat_{j}'], frame[f'login_lon_{j}'])
+                for i in range(1, 4) for j in range(i + 1, 5)
+            ], axis=1).max(axis=1)
+            lh = np.log1p(hmax.to_numpy(dtype=float))
+            med, mad = _robust_scale(lh)
+            out['geo_hav|max'] = np.clip((lh - med) / mad, 0.0, None)
+    return pd.DataFrame(out, index=frame.index)
+
+
+def _survival_surprise(stats, bg, tail_extrapolate=False, cap=30.0):
+    """Per-family surprise -log S(x), with S the empirical survival of each statistic on background rows.
+
+    S(x) = (#background rows with value >= x, + 1) / (#background rows + 1), so each family's
+    own tail shape sets its scale (a heavy-tailed family gives less surprise for the same |z|)
+    and values beyond the background maximum saturate at log(n_bg + 1). With
+    `tail_extrapolate=True` an exponential tail fitted on the 90th-97th percentile spread is
+    used beyond the 97th percentile instead (kept for experiments; the synthetic check
+    preferred the plain empirical version). A family's surprise is the max over its
+    statistics minus log(#statistics) (Bonferroni), capped at `cap`. Latitude, longitude and
+    the haversine jump form one `geo` family: they describe one event and move together even
+    in normal rows, so scoring them as three families would break the independence null.
+    """
+    fam_of = lambda col: 'geo' if col.split('|')[0] in _GEO_SCORE_FAMILIES else col.split('|')[0]
+    per_stat = {}
+    for col in stats:
+        a = stats[col].to_numpy(dtype=float)
+        ref = np.sort(a[bg & np.isfinite(a)])
+        if len(ref) < 50:
+            per_stat[col] = np.zeros(len(a))
+            continue
+        cnt = len(ref) - np.searchsorted(ref, a, side='left')
+        e = -np.log((cnt + 1.0) / (len(ref) + 1.0))
+        if tail_extrapolate:
+            q90, q97 = np.quantile(ref, [0.90, 0.97])
+            tau = max(float(q97 - q90) / np.log(0.10 / 0.03), 1e-6)
+            e = np.where(a > q97, -np.log(0.03) + (a - q97) / tau, e)
+        e[~np.isfinite(a)] = 0.0
+        per_stat[col] = e
+    per_stat = pd.DataFrame(per_stat, index=stats.index)
+    fams = sorted({fam_of(c) for c in stats})
+    result = {}
+    for fam in fams:
+        cols = [c for c in per_stat if fam_of(c) == fam]
+        result[fam] = np.clip(per_stat[cols].max(axis=1) - np.log(len(cols)), 0.0, cap)
+    return pd.DataFrame(result, index=stats.index)
+
+
+def _flag_surprise(frame):
+    """Surprise -log(rate) for each raised security flag (0 when the flag is off or missing)."""
+    out = {}
+    for col in SECURITY_FLAGS:
+        if col in frame:
+            v = frame[col].to_numpy(dtype=float)
+            rate = float(np.nanmean(v)) if np.isfinite(v).any() else 0.5
+            out[f'flag_{col}'] = np.where(v >= 0.5, -np.log(min(max(rate, 1e-3), 0.999)), 0.0)
+    return pd.DataFrame(out, index=frame.index)
+
+
+def _topk_sum(mat, k):
+    k = min(k, mat.shape[1])
+    return np.sort(mat, axis=1)[:, ::-1][:, :k].sum(axis=1)
+
+
+def surprise_shift_score(frame, k=4, n_rep=4, n_pass=3, seed=342, min_rows=10000, n_cal=5):
+    """Coordinated multi-family shift score with an Empirical Bayes posterior.
+
+    Row energy = sum of the k largest per-family surprises (temporal families + raised flags).
+    Real anomalies of the shift kind move several families at once; under independence the
+    same energy is rare, so the null is the energy of background rows with every family
+    permuted independently. The background is re-estimated `n_pass` times (rows with
+    posterior >= 0.5 leave it), which keeps a large anomaly group from diluting its own
+    surprise.
+
+    The isotonic real-vs-null calibration needs many background rows in the tail; below
+    `min_rows` rows it is noisy, so the v1 hinge-energy view (`calibrated_shift_score`) is used.
+    """
+    n = len(frame)
+    stats = shift_statistics(frame)
+    if n == 0 or stats.shape[1] == 0:
+        return np.zeros(n), np.zeros(n), pd.DataFrame(index=frame.index)
+    if n < min_rows:
+        _, shift_mag = extract_multiview_features(frame)
+        energy, post, _ = calibrated_shift_score(shift_mag, seed=seed)
+        return energy, post, pd.DataFrame(index=frame.index)
+    flags = _flag_surprise(frame)
+    rng = np.random.default_rng(seed)
+    bg = np.ones(n, dtype=bool)
+    energy, post, surprise = np.zeros(n), np.zeros(n), None
+    for _ in range(max(1, n_pass)):
+        surprise = pd.concat([_survival_surprise(stats, bg), flags], axis=1)
+        mat = surprise.to_numpy(dtype=float)
+        energy = _topk_sum(mat, k)
+        mb = mat[bg]
+        if len(mb) < 60:
+            return energy, np.tanh(energy / 40.0), surprise
+        # Bagged calibration: average the isotonic posterior over `n_cal` independent null
+        # draws, so a lucky or unlucky null sample cannot create a flat posterior plateau.
+        posts = []
+        for _ in range(n_cal):
+            null = np.concatenate([
+                _topk_sum(np.column_stack([mb[rng.permutation(len(mb)), j] for j in range(mat.shape[1])]), k)
+                for _ in range(n_rep)
+            ])
+            posts.append(calibrate_vs_clean_null(energy, null)[0])
+        post = np.mean(posts, axis=0)
+        new_bg = post < 0.5
+        if new_bg.sum() < 60 or np.array_equal(new_bg, bg):
+            break
+        bg = new_bg
+    return energy, post, surprise
+
+
+def copula_ranks(levels, bg):
+    """Map every column to (0, 1) by its rank among background rows (NaN stays NaN)."""
+    out = {}
+    for col in levels:
+        a = levels[col].to_numpy(dtype=float)
+        ref = np.sort(a[bg & np.isfinite(a)])
+        m = max(len(ref), 1)
+        u = (np.searchsorted(ref, a, side='left') + np.searchsorted(ref, a, side='right') + 1.0) / (2.0 * m + 2.0)
+        u[~np.isfinite(a)] = np.nan
+        out[col] = u
+    return pd.DataFrame(out, index=levels.index)
+
+
+def dependency_edges(u, bg, qs=(0.05, 0.10), z_min=6.0, min_unique=20):
+    """Column pairs whose joint tail corner holds far more background rows than independence predicts.
+
+    For each pair, each of the four corners (both high, both low, mixed) and each tail
+    fraction q in `qs`, z = (observed - expected) / sqrt(expected). Independent columns give
+    z ~ N(0, 1); a hidden multivariate group sitting in a corner gives a large positive z.
+    Each (pair, corner) keeps its largest z over `qs`.
+    """
+    cols = [c for c in u if u.loc[bg, c].nunique() >= min_unique]
+    ub = u.loc[bg, cols]
+    ok = ub.notna().to_numpy()
+    best = {}
+    for q in qs:
+        hi, lo = (ub > 1 - q).to_numpy(), (ub < q).to_numpy()
+        for i, j in itertools.combinations(range(len(cols)), 2):
+            both = ok[:, i] & ok[:, j]
+            n = int(both.sum())
+            if n < 200:
+                continue
+            for ma, sa in ((hi[:, i], 1), (lo[:, i], -1)):
+                for mb, sb in ((hi[:, j], 1), (lo[:, j], -1)):
+                    obs = int((ma & mb & both).sum())
+                    exp = float((ma & both).sum()) * float((mb & both).sum()) / n
+                    z = (obs - exp) / np.sqrt(max(exp, 1.0))
+                    key = (cols[i], sa, cols[j], sb)
+                    if z >= z_min and z > best.get(key, {'z': -np.inf})['z']:
+                        best[key] = {'a': cols[i], 'dir_a': sa, 'b': cols[j], 'dir_b': sb, 'z': float(z),
+                                     'obs': obs, 'exp': exp, 'q': q}
+    return list(best.values())
+
+
+def _knn_density_ratio(u, feats, bg, k=60, n_null=5, seed=342):
+    """log kNN density ratio of each row vs column-permuted background in the copula subspace.
+
+    Returns the statistic for all rows and the same statistic for a fresh permuted sample
+    (its null distribution), so the two can be calibrated into a posterior.
+    """
+    rng = np.random.default_rng(seed)
+    x = u[feats].to_numpy(dtype=float)
+    x = np.where(np.isnan(x), 0.5, x)
+    xb = x[bg]
+    nb, d = xb.shape
+    permuted = lambda: np.column_stack([xb[rng.permutation(nb), j] for j in range(d)])
+    nn_real = NearestNeighbors(n_neighbors=k + 1).fit(xb)
+    nn_null = NearestNeighbors().fit(np.vstack([permuted() for _ in range(n_null)]))
+
+    def stat(query, in_reference):
+        dist, _ = nn_real.kneighbors(query, n_neighbors=k + 1)
+        radius = dist[:, k] if in_reference else dist[:, k - 1]
+        cnt = np.array([len(a) for a in nn_null.radius_neighbors(query, radius=radius, return_distance=False)]) / n_null
+        return np.log((k + 0.5) / (cnt + 0.5))
+
+    s = np.zeros(len(x))
+    s[bg] = stat(x[bg], True)
+    if (~bg).any():
+        s[~bg] = stat(x[~bg], False)
+    return s, stat(permuted(), False)
+
+
+def _group_mixture_posterior(z, bg, init_members, max_iter=200, tol=1e-8):
+    """EM for one compact group on top of an independent background, in probit-copula space.
+
+    Background density = product of standard normals (copula ranks are uniform and the
+    columns are independent away from the group); group density = one full-covariance
+    Gaussian. Only background rows fit the parameters; every row gets a posterior. Returns
+    (posterior, weight, mean, covariance) or zeros when the group collapses.
+    """
+    n, d = z.shape
+    zb = z[bg]
+    if init_members.sum() < max(10, d + 2):
+        return np.zeros(n), 0.0, None, None
+    log_bg = -0.5 * (z ** 2).sum(axis=1) - 0.5 * d * np.log(2.0 * np.pi)
+    pi = float(init_members[bg].mean())
+    mu = z[init_members].mean(axis=0)
+    cov = np.cov(z[init_members].T).reshape(d, d) + 1e-3 * np.eye(d)
+    resp_b = init_members[bg].astype(float)
+    for _ in range(max_iter):
+        sign, logdet = np.linalg.slogdet(cov)
+        if sign <= 0:
+            return np.zeros(n), 0.0, None, None
+        diff = z - mu
+        maha = np.einsum('ni,ij,nj->n', diff, np.linalg.inv(cov), diff)
+        log_g = -0.5 * maha - 0.5 * logdet - 0.5 * d * np.log(2.0 * np.pi)
+        logit = np.log(max(pi, 1e-12)) - np.log(max(1.0 - pi, 1e-12)) + log_g - log_bg
+        post = 1.0 / (1.0 + np.exp(-np.clip(logit, -50.0, 50.0)))
+        resp_b = post[bg]
+        w = resp_b.sum()
+        if w < max(10.0, d + 2.0):
+            return np.zeros(n), 0.0, None, None
+        pi_new = float(w / len(zb))
+        mu = (resp_b[:, None] * zb).sum(axis=0) / w
+        db = zb - mu
+        cov = np.einsum('n,ni,nj->ij', resp_b, db, db) / w + 1e-4 * np.eye(d)
+        if abs(pi_new - pi) < tol:
+            pi = pi_new
+            break
+        pi = pi_new
+    return post, pi, mu, cov
+
+
+def _maximal_cliques(adj):
+    """Bron-Kerbosch with pivoting on a small boolean adjacency matrix; returns lists of node indices."""
+    nbrs = [set(np.flatnonzero(row)) for row in adj]
+    out = []
+
+    def expand(r, p, x):
+        if not p and not x:
+            out.append(sorted(r))
+            return
+        pivot = max(p | x, key=lambda v: len(nbrs[v] & p))
+        for v in list(p - nbrs[pivot]):
+            expand(r | {v}, p & nbrs[v], x & nbrs[v])
+            p = p - {v}
+            x = x | {v}
+
+    expand(set(), set(range(len(adj))), set())
+    return out
+
+
+def _candidate_groups(edges):
+    """Feature sets of candidate groups: maximal cliques of the (feature, direction) edge graph.
+
+    Using (feature, direction) nodes keeps two groups apart when they share a feature in
+    opposite tails; using cliques keeps them apart when they share a feature in the same tail
+    (a path a-b-c with no a-c edge is two groups, not one).
+    """
+    nodes = sorted({(e['a'], e['dir_a']) for e in edges} | {(e['b'], e['dir_b']) for e in edges})
+    pos = {node: i for i, node in enumerate(nodes)}
+    adj = np.zeros((len(nodes), len(nodes)), dtype=bool)
+    for e in edges:
+        i, j = pos[(e['a'], e['dir_a'])], pos[(e['b'], e['dir_b'])]
+        adj[i, j] = adj[j, i] = True
+    groups = []
+    for clique in _maximal_cliques(adj):
+        feats = sorted({nodes[i][0] for i in clique})
+        if len(feats) >= 2 and feats not in groups:
+            groups.append(feats)
+    return groups
+
+
+def dependency_group_score(levels, bg, k=60, n_null=5, z_min=6.0, z_add=5.0, seed=342, min_rows=2000):
+    """Find hidden multivariate groups among level features and score membership.
+
+    1. `dependency_edges` on background rows finds column pairs with a crowded tail corner.
+    2. Each maximal clique of (column, tail) nodes is a candidate group; provisional members (kNN density-ratio
+       posterior > 0.5) are used to add any other column whose copula values are clearly
+       shifted for them (|z| >= z_add).
+    3. Membership posterior = EM mixture (independent background + one Gaussian group) in the
+       probit-copula subspace, started from the provisional members. This gives a smooth
+       posterior that falls off with distance from the group, instead of the flat plateaus the
+       isotonic calibration of a noisy kNN ratio produces. Groups combine by Noisy-OR.
+    Needs at least `min_rows` background rows; otherwise returns zeros.
+    """
+    n = len(levels)
+    p = np.zeros(n)
+    stat_max = np.zeros(n)
+    groups = []
+    if int(bg.sum()) < min_rows or levels.shape[1] < 2:
+        return p, stat_max, groups
+    u = copula_ranks(levels, bg)
+    edges = dependency_edges(u, bg, z_min=z_min)
+    if not edges:
+        return p, stat_max, groups
+    for c, feats in enumerate(_candidate_groups(edges)):
+        s, s_null = _knn_density_ratio(u, feats, bg, k=k, n_null=n_null, seed=seed + 17 * c)
+        pc, _ = calibrate_vs_clean_null(s, s_null)
+        members = (pc > 0.5) & bg
+        added = []
+        if members.sum() >= 15:
+            for col in u.columns:
+                if col in feats:
+                    continue
+                vals = u.loc[members, col].dropna()
+                if len(vals) < 15:
+                    continue
+                z = (vals.mean() - 0.5) / (0.2887 / np.sqrt(len(vals)))
+                if abs(z) >= z_add:
+                    added.append((col, float(z)))
+        if added:
+            feats = feats + [a for a, _ in added]
+            s, s_null = _knn_density_ratio(u, feats, bg, k=k, n_null=n_null, seed=seed + 17 * c + 7)
+            pc, _ = calibrate_vs_clean_null(s, s_null)
+        zc = np.clip(u[feats].to_numpy(dtype=float), 1e-6, 1.0 - 1e-6)
+        zc = np.where(np.isnan(zc), 0.0, norm.ppf(zc))
+        post, weight, mu, cov = _group_mixture_posterior(zc, bg, pc > 0.5)
+        groups.append({'features': feats, 'added': added, 'n_post_gt_50': int((post > 0.5).sum()),
+                       'expected_size': float(post[bg].sum()), 'weight': float(weight),
+                       'mean_probit': None if mu is None else [float(m) for m in mu],
+                       'sd_probit': None if cov is None else [float(s_) for s_ in np.sqrt(np.diag(cov))],
+                       'edges': [e for e in edges if e['a'] in feats and e['b'] in feats]})
+        p = 1.0 - (1.0 - p) * (1.0 - post)
+        stat_max = np.maximum(stat_max, s)
+    return p, stat_max, groups
+
+
+
+
 def select_expected_macro_f3(p_anom):
     """Select prediction mask maximizing Expected Macro-F3 from calibrated posteriors."""
     p = np.asarray(p_anom, dtype=float)
@@ -409,8 +775,55 @@ def select_expected_macro_f3(p_anom):
     return pred, k_opt, float(p_hat / n), float(ef3[best_idx])
 
 
-def score_anomalies(features_df, seed=342, profile='balanced'):
-    """Run the 3-view unsupervised pipeline and return scores plus view diagnostics."""
+def _fuse(p_joint, aux):
+    """Noisy-OR posterior with a tiny auxiliary tie-break so ranking inside equal posteriors is stable."""
+    return np.where(
+        p_joint >= 0.9999,
+        0.9999 + 1e-5 * aux,
+        np.where(p_joint == 0.0, 1e-5 * aux, p_joint + 1e-7 * aux),
+    )
+
+
+def score_anomalies(features_df, seed=342, profile='balanced', method='v2'):
+    """Run the unsupervised pipeline and return scores plus view diagnostics.
+
+    method='v2' (default): island view + surprise shift view + dependency-group view.
+    method='v1': island view + calibrated hinge-energy shift + residual HGB density ratio.
+    """
+    if method == 'v1':
+        return _score_anomalies_v1(features_df, seed=seed, profile=profile)
+    if method != 'v2':
+        raise ValueError(f'unknown Task 5 method {method!r}; choose from {METHODS}')
+    cfg = _PROFILE_CONFIG[profile]
+    levels, _ = extract_multiview_features(features_df)
+    s_island = topological_island_score(levels)
+    p_island = np.clip(1.0 - np.exp(-0.4 * s_island), 0.0, 1.0)
+    e_shift, p_shift, _ = surprise_shift_score(features_df, n_rep=cfg['shift_null_rep'], seed=seed)
+    bg_mask = (p_shift < 0.5) & (s_island == 0.0)
+    p_dep, dep_stat, groups = dependency_group_score(levels, bg_mask, k=cfg['dep_k'], n_null=cfg['dep_null_rep'], seed=seed + 100)
+
+    p_joint = 1.0 - (1.0 - p_shift) * (1.0 - p_island) * (1.0 - p_dep)
+    aux = (np.clip(e_shift / 60.0, 0.0, 1.0) + 1.0 / (1.0 + np.exp(-np.clip(dep_stat, -20.0, 20.0)))
+           + np.clip(s_island / 30.0, 0.0, 1.0)) / 3.0
+    return {
+        'anomaly_score': _fuse(p_joint, aux),
+        'anomaly_probability': p_joint,
+        'shift_prob': p_shift,
+        'island_prob': p_island,
+        'density_ratio_prob': p_dep,
+        'shift_energy': e_shift,
+        'island_raw': s_island,
+        'density_ratio_logit': dep_stat,
+        'bg_shift_null_scale': None,
+        'bg_density_null_scale': None,
+        'dependency_groups': groups,
+        'level_features': list(levels.columns),
+        'shift_features': list(_complete_families(features_df)),
+    }
+
+
+def _score_anomalies_v1(features_df, seed=342, profile='balanced'):
+    """Original (v1) 3-view pipeline kept for comparison."""
     cfg = _PROFILE_CONFIG[profile]
     levels, shift_mag = extract_multiview_features(features_df)
     s_island = topological_island_score(levels)
@@ -445,6 +858,12 @@ def score_anomalies(features_df, seed=342, profile='balanced'):
     }
 
 
+_MODEL_NAMES = {
+    'v1': 'Multi-view Empirical Bayes density-ratio ensemble (Topological Islands + Calibrated Shifts + Residual HGB+Proj)',
+    'v2': 'Multi-view Empirical Bayes ensemble v2 (Topological Islands + Surprise Shifts + Dependency Groups)',
+}
+
+
 def _validate_contamination(contamination):
     """Validate optional contamination override; accept 'auto' or None."""
     if contamination is None or (isinstance(contamination, str) and contamination.strip().lower() == 'auto'):
@@ -455,8 +874,10 @@ def _validate_contamination(contamination):
     return rate
 
 
-def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamination='auto', threads=-1):
+def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamination='auto', threads=-1, method='v2'):
     """Fit Task 5 unsupervised multi-view anomaly detector and save predictions."""
+    if method not in METHODS:
+        raise ValueError(f'unknown Task 5 method {method!r}; choose from {METHODS}')
     contam_mode = _validate_contamination(contamination)
     root, out = Path(data_root), Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -467,8 +888,8 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
     if 'is_anomaly' in x:
         raise ValueError('Task 5 must remain unsupervised; found label column')
 
-    LOG.info('Task 5 scoring multi-view density ratios (%s profile, rows=%d)', profile, len(x))
-    views = score_anomalies(x, seed=seed, profile=profile)
+    LOG.info('Task 5 scoring multi-view detector %s (%s profile, rows=%d)', method, profile, len(x))
+    views = score_anomalies(x, seed=seed, profile=profile, method=method)
     p_joint = views['anomaly_probability']
     score = views['anomaly_score']
     auto_pred, k_opt, p_est, exp_mf3 = select_expected_macro_f3(p_joint)
@@ -500,8 +921,10 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
     scored.to_csv(out / 'task5_scores.csv', index=False)
     artifacts = {
         'profile': profile,
+        'method': method,
         'seed': seed,
         'config': _PROFILE_CONFIG[profile],
+        'dependency_groups': views.get('dependency_groups', []),
         'level_features': views['level_features'],
         'shift_features': views['shift_features'],
         'bg_shift_null_scale': views['bg_shift_null_scale'],
@@ -513,7 +936,8 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
 
     metrics = {
         'task': 5,
-        'model': 'Multi-view Empirical Bayes density-ratio ensemble (Topological Islands + Calibrated Shifts + Residual HGB+Proj)',
+        'model': _MODEL_NAMES[method],
+        'method': method,
         'seed': seed,
         'profile': profile,
         'threads': threads,
@@ -532,6 +956,7 @@ def train_anomaly(data_root, output_dir, seed=342, profile='balanced', contamina
             'density_ratio_prob_gt_20': int((views['density_ratio_prob'] > 0.2).sum()),
             'bg_shift_null_scale': views['bg_shift_null_scale'],
             'bg_density_null_scale': views['bg_density_null_scale'],
+            'dependency_groups': [{k: g[k] for k in ('features', 'n_post_gt_50', 'expected_size')} for g in views.get('dependency_groups', [])],
         },
         'sensitivity_flagged_rows': {str(q): int(np.ceil(q * len(frame))) for q in (.05, .1, .15, .2, .3)},
     }

@@ -33,6 +33,7 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=342)
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--contamination', type=_parse_contamination, default='auto')
+    parser.add_argument('--t5-method', choices=('v1', 'v2'), default='v2', help='Task 5 detector version')
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--workers', type=int, default=0)
@@ -62,7 +63,7 @@ def main(argv=None):
             else:
                 from pis.anomaly import train_anomaly
                 result = train_anomaly(args.data_root, args.output_dir, args.seed, args.profile,
-                                       args.contamination, args.threads)
+                                       args.contamination, args.threads, method=args.t5_method)
             print(f'Task {task} completed: {result.get("oof_score", result.get("best_macro_f1", "see metrics JSON"))}')
     elif args.command == 'assemble':
         from pis.submission import assemble
