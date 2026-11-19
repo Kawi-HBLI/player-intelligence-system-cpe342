@@ -38,7 +38,7 @@ PRESET_VIEW_SETS = {
     'size': ['id', 'size1.125', 'size1.25'],
     'rot8+size': ['id', 'rot+8', 'rot-8', 'size1.125', 'size1.25'],
     'rot8+zoom+size': ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9', 'size1.125', 'size1.25'],
-    'all': list(t4.TTA_VIEWS),
+    'all': list(t4.KNOWN_VIEWS),
 }
 
 
@@ -97,7 +97,7 @@ class Group:
         common = set(self.runs[0].views)
         for run in self.runs[1:]:
             common &= set(run.views)
-        return [v for v in t4.TTA_VIEWS if v in common]
+        return [v for v in t4.KNOWN_VIEWS if v in common]
 
     def oof(self, views: list[str]) -> np.ndarray:
         probs = np.full((self.n_images, t4.NUM_CLASSES), np.nan, dtype=np.float32)

@@ -17,7 +17,7 @@ class TTAViewTest(unittest.TestCase):
         self.batch = torch.rand(3, 3, 16, 32)
 
     def test_views_keep_shape(self):
-        for view in t4.TTA_VIEWS[1:]:
+        for view in t4.KNOWN_VIEWS[1:]:
             if view.startswith('size'):
                 continue  # size views change the input size inside Preprocess, see the next test
             self.assertEqual(t4.apply_view(self.batch, view).shape, self.batch.shape, view)
@@ -53,7 +53,8 @@ class OOFHelperTest(unittest.TestCase):
 
     def test_presets_use_known_views(self):
         for views in oof.PRESET_VIEW_SETS.values():
-            self.assertTrue(set(views) <= set(t4.TTA_VIEWS))
+            self.assertTrue(set(views) <= set(t4.KNOWN_VIEWS))
+        self.assertTrue(set(t4.TTA_VIEWS) <= set(t4.KNOWN_VIEWS))
 
 
 if __name__ == '__main__':

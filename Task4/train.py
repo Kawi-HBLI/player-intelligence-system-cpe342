@@ -441,8 +441,11 @@ def predict_logits(model: nn.Module, images: torch.Tensor, indices: np.ndarray,
 # Test-time augmentation (TA ruling 15 Nov: allowed). Each view is a fixed, label-preserving
 # change of the image; the softmax over several views is averaged. Which views to average
 # is chosen on out-of-fold training predictions only (Task4/oof.py).
-TTA_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9',
-             'size0.875', 'size1.125', 'size1.25']
+KNOWN_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9',
+               'size0.875', 'size1.125', 'size1.25']
+# Views computed by --mode tta. Chosen on scene fold 0 (training images only): +-8 degree turns and
+# zoom in/out helped every model tried; flip hurt (screen text is mirrored) and size views were mixed.
+TTA_VIEWS = ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9']
 
 
 def affine(batch: torch.Tensor, turn: float, zoom: float) -> torch.Tensor:
