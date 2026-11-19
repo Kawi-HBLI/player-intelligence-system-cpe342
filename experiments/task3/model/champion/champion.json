@@ -1,33 +1,33 @@
 {
-  "name": "V8: V4 + Optuna-tuned amount model (trial 16)",
-  "variant": "v8",
+  "name": "V9a: V8 + label-free imputation of prev_month_spending (in-fold, outer-train rows only)",
+  "variant": "v9a",
   "protocol": "honest-es",
   "protocol_note": "early stopping on a fixed 85%/15% fit/es split of each outer-training part (seed 342 + fold, stratified on y > 0 for two-stage models); the outer validation fold is only scored; predictions capped at the outer-training max target",
-  "script": "experiments/task3/model/tuning/tuning.py",
-  "branch": "task3/tuning",
-  "commit": "0914b69+dirty",
+  "script": "experiments/task3/model/v9_impute/v9_impute.py",
+  "branch": "task3/v9-impute",
+  "commit": "dd63696+dirty",
   "commit_note": "HEAD when the run started; the promotion itself lands in the next commit",
   "fold_scores": [
+    0.801877,
+    0.78722,
+    0.795327
+  ],
+  "oof": 0.794729,
+  "fold_scores_seed1342": [
+    0.801946,
+    0.78717,
+    0.795355
+  ],
+  "oof_seed1342": 0.794744,
+  "date": "2026-11-19",
+  "previous_champion": "V8: V4 + Optuna-tuned amount model (trial 16)",
+  "previous_champion_fold_scores": [
     0.798653,
     0.784773,
     0.793209
   ],
-  "oof": 0.792138,
-  "fold_scores_seed1342": [
-    0.798344,
-    0.784636,
-    0.793377
-  ],
-  "oof_seed1342": 0.792046,
-  "date": "2026-11-15",
-  "previous_champion": "V4-honest: V4 recipe under honest early stopping",
-  "previous_champion_fold_scores": [
-    0.797021,
-    0.784045,
-    0.792578
-  ],
-  "previous_champion_oof": 0.791147,
-  "rule": "promoted only if it beats the current champion on all 3 folds, within the same protocol; V8 also had to win every fold with a second seed scheme (1342 + fold)",
+  "previous_champion_oof": 0.792138,
+  "rule": "promoted only if it beats the current champion on all 3 folds, within the same protocol, in both amount seed runs (342 + fold and 1342 + fold)",
   "previous_protocol": {
     "protocol": "val-es",
     "protocol_note": "early stopping on the scored outer validation fold (slightly optimistic OOF)",
@@ -66,7 +66,7 @@
       "date": "2026-11-16",
       "public": 0.80684,
       "base_public": 0.80676,
-      "delta": 0.00008,
+      "delta": 8e-05,
       "method": "task3 column swap via make_submission.py; base task3 was V4 refit"
     }
   ],

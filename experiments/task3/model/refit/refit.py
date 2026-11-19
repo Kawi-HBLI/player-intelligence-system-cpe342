@@ -1,4 +1,4 @@
-"""Task 3 refit: train a two-stage recipe (V4 or V8) on the FULL training set for Kaggle.
+"""Task 3 refit: train a two-stage recipe (V4, V8 or V9) on the FULL training set for Kaggle.
 
 The competition says to combine train + validation for the final model. CV test
 predictions are the average of 3 fold models, each trained on 2/3 of the rows; a refit
@@ -8,14 +8,19 @@ judged on Kaggle, and this script only checks that it is not broken.
 Variants (same classifier + MultiQuantile amount recipe, quantile combine s = 1, t = 0.5):
   - v4: V4's settings; iterations from V4's val-es CV run (amount_model_results.md);
   - v8: V4 with the Optuna-tuned amount settings of experiments/task3/model/tuning/v8.json;
-        iterations from its honest-es CV run (classifier and amount best iterations).
-Both: iterations = mean CV best iteration × 1.2, seeds 342-344, and final predictions
+        iterations from its honest-es CV run (classifier and amount best iterations);
+  - v9a / v9b: V8 + label-free imputation of the spend-history features
+        (experiments/task3/model/v9_impute/, settings and iterations in v9.json). The imputer
+        is fitted on the training rows of each fit only: fold 1's training part for the
+        fold-1 check, the full train for the refit; never on test rows, never on the target.
+All: iterations = mean CV best iteration × 1.2, seeds 342-344, and final predictions
 clipped with amount_model.cap_predictions to [0, full-train max target] (300,000).
 
 Run from the repo root:
-    python experiments/task3/model/refit/refit.py [--variant v4|v8] [--threads N]
+    python experiments/task3/model/refit/refit.py [--variant v4|v8|v9a|v9b] [--threads N]
 --threads sets CatBoost's thread_count (default -1 = all cores). On a fresh clone, v8 first
-needs its CV outputs: python experiments/task3/model/tuning/v8_cv.py (rebuilds them from v8.json).
+needs its CV outputs: python experiments/task3/model/tuning/v8_cv.py (rebuilds them from v8.json);
+v9a/v9b need python experiments/task3/model/v9_impute/v9_impute.py --threads 12.
 Prints the elapsed time of every step, the iterations used, the runtime of every fit, the fold-1 check and the sanity
 table; writes outputs/experiments/task3_<variant>_refit/task3_predictions.csv (capped) and
 task3_predictions_uncapped.csv (gitignored) only if every check passes, plus the results
@@ -50,6 +55,11 @@ from oracle import FOLDS, SEED, TARGET, to_markdown  # noqa: E402  (on sys.path 
 from pis.common import DEFAULT_DATA  # noqa: E402
 from pis.tabular import _prepare, _score  # noqa: E402
 
+# V9's imputer and feature builder, imported (not copied) so the refit builds exactly the
+# inputs its CV score was measured on.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'v9_impute'))
+from v9_impute import apply_imputers, fit_imputers, model_x  # noqa: E402
+
 # --- Settings ---
 CLF, AMT = TWO_STAGE['v4']  # V4 = V3's classifier + the MultiQuantile log-ratio amount model
 SEED_OFFSETS = [0, 1, 2]  # random_seed = SEED + offset = 342, 343, 344 (cb_params' scheme)
@@ -57,7 +67,14 @@ EXTRA = 1.2  # iterations × 1.2: the full train has more rows than a CV trainin
 FOLD1_TOL = 0.002  # fold-1 refit vs the variant's CV fold-1 score
 MODEL = Path(__file__).resolve().parents[1]  # experiments/task3/model/
 V8_JSON = MODEL / 'tuning' / 'v8.json'
+V9_JSON = MODEL / 'v9_impute' / 'v9.json'
 VARIANTS = {
+    **{v: dict(name=name, cv_pred=OUT / f'task3_{v}' / 'task3_predictions.csv',
+               results=Path(__file__).with_name(f'refit_{v}_results.md'),
+               log=f'{name} refit (full train, 3 seeds, cap, imputer fitted on the full train)',
+               recipe=f'{name} = V8 + label-free imputation of the spend-history features '
+                      '(`experiments/task3/model/v9_impute/v9.json`, honest-es protocol)')
+       for v, name in (('v9a', 'V9a'), ('v9b', 'V9b'))},
     'v4': dict(name='V4', cv_pred=OUT / 'task3_v4' / 'task3_predictions.csv',
                results=Path(__file__).with_name('refit_results.md'),
                log='V4 refit + cap (full train, 3 seeds, predictions clipped to [0, 300,000])',
@@ -107,6 +124,14 @@ def setup(variant, champion):
         if old.get('variant') != 'v4':
             sys.exit('V4 val-es fold scores not found in champion.json')
         return v4_best_iterations(), {}, old['fold_scores'][0], 'V4 CV (val-es)'
+    if variant.startswith('v9'):
+        if not V9_JSON.exists():
+            sys.exit(f'{V9_JSON.relative_to(ROOT)} not found: V9 was not promoted by v9_impute.py')
+        v9 = json.loads(V9_JSON.read_text(encoding='utf-8'))
+        if v9['variant'] != variant:
+            sys.exit(f'{V9_JSON.relative_to(ROOT)} holds {v9["variant"]}, not {variant}')
+        best = {CLF: v9['classifier_best_iterations'], AMT: v9['amount_best_iterations']}
+        return best, v9['amount_params'], v9['fold_scores'][0], f'{VARIANTS[variant]["name"]} CV (honest-es)'
     if not V8_JSON.exists():
         sys.exit(f'{V8_JSON.relative_to(ROOT)} not found: V8 was not promoted by tuning.py')
     v8 = json.loads(V8_JSON.read_text(encoding='utf-8'))
@@ -121,25 +146,47 @@ def params(iterations, offset, **overrides):
     return p
 
 
-# --- One fit: classifier on all rows, MultiQuantile amount model on spenders ---
-# Same features, target and prev_missing flag as amount_model.py. Returns the two
-# models and their fit times (seconds).
+# --- V9: label-free imputation, fitted on the training rows of each fit only ---
+# Returns, per frame: (raw frame the recipe reads, original raw frame for the flags, model x).
+# V4/V8 impute nothing: both raw frames are the original. V9 imputes the spend-history
+# features with imputers fitted on `fit_raw` (never the target, never test rows) and builds
+# x with v9_impute.model_x, exactly as in its CV.
 
-def fit_two_stage(x_fit, raw_fit, y_fit, categorical, offset, n_iter, amount_params):
+def impute_frames(cols, fit_raw, raws):
+    """Each raw frame imputed with imputers fitted on `fit_raw` only (unchanged if no cols)."""
+    if not cols:
+        return list(raws)
+    imputers = fit_imputers(fit_raw, cols)
+    return [apply_imputers(imputers, raw) for raw in raws]
+
+
+def make_x(cols, x, raw, raw0, es):
+    return model_x(x, raw, raw0, es, cols) if cols else add_features(x, raw, es)
+
+
+# --- One fit: classifier on all rows, MultiQuantile amount model on spenders ---
+# Same features, target and prev_missing flag as amount_model.py. `raw_fit` is the frame the
+# target reads (imputed for V9: the imputed prev is the denominator where prev was missing);
+# `flag_raw` is the original frame the prev_missing flag reads (for V9 the flag is already in
+# x and with_prev_flag rewrites it with the same values; it must never read the imputed frame,
+# where nothing is missing). Returns the two models and their fit times (seconds).
+
+def fit_two_stage(x_fit, raw_fit, y_fit, categorical, offset, n_iter, amount_params, flag_raw=None):
     spend = y_fit > 0
+    flag_raw = raw_fit if flag_raw is None else flag_raw
     t0 = time.time()
     clf = CatBoostClassifier(loss_function='Logloss', **params(n_iter[CLF], offset, **CLASSIFIERS[CLF]))
     clf.fit(x_fit, spend.astype(int), cat_features=categorical)
     t1 = time.time()
     reg = CatBoostRegressor(loss_function=MQ_LOSS, **params(n_iter[AMT], offset, **amount_params))
-    reg.fit(with_prev_flag(x_fit, raw_fit)[spend], log_ratio(y_fit[spend], raw_fit[spend]),
+    reg.fit(with_prev_flag(x_fit, flag_raw)[spend], log_ratio(y_fit[spend], raw_fit[spend]),
             cat_features=categorical)
     return clf, reg, (t1 - t0, time.time() - t1)
 
 
-def predict(clf, reg, x, raw):
+def predict(clf, reg, x, flag_raw):
     """(p, log-ratio quantiles): combined later, after averaging, like the CV fold average."""
-    return clf.predict_proba(x)[:, 1], reg.predict(with_prev_flag(x, raw))
+    return clf.predict_proba(x)[:, 1], reg.predict(with_prev_flag(x, flag_raw))
 
 
 def cv_test_p(variant, train, test, x, xt, categorical, y, folds, cv):
@@ -151,10 +198,12 @@ def cv_test_p(variant, train, test, x, xt, categorical, y, folds, cv):
     honest_es.py in outputs/experiments/task3_v4_honest/classifier_p.npz.
     Check: rows with p > 0.5 must be exactly the non-zero rows of the saved CV file.
     """
-    if variant == 'v8':
-        path = OUT / 'task3_v4_honest' / 'classifier_p.npz'
+    if variant == 'v8' or variant.startswith('v9'):
+        # V9: v9_impute.py saves its (imputed-input) classifier p next to its predictions.
+        path = OUT / ('task3_v4_honest' if variant == 'v8' else f'task3_{variant}') / 'classifier_p.npz'
         if not path.exists():
-            sys.exit(f'{path.relative_to(ROOT)} not found; run experiments/task3/model/tuning/v8_cv.py')
+            sys.exit(f'{path.relative_to(ROOT)} not found; run experiments/task3/model/'
+                     + ('tuning/v8_cv.py' if variant == 'v8' else 'v9_impute/v9_impute.py --threads 12'))
         p_cv = np.load(path)['p_test'].mean(axis=0)
     else:
         p_cv = np.zeros(len(test))
@@ -190,13 +239,19 @@ def main():
     out_dir = OUT / f'task3_{args.variant}_refit'
     champion = json.loads((CHAMPION / 'champion.json').read_text(encoding='utf-8'))
     if not cfg['cv_pred'].exists():
-        how = ('python experiments/task3/model/tuning/v8_cv.py' if args.variant == 'v8'
-               else 'python experiments/task3/model/amount_model/amount_model.py --variants v4')
+        how = {'v8': 'python experiments/task3/model/tuning/v8_cv.py',
+               'v4': 'python experiments/task3/model/amount_model/amount_model.py --variants v4'}.get(
+            args.variant, 'python experiments/task3/model/v9_impute/v9_impute.py --threads 12')
         sys.exit(f'{cfg["cv_pred"].relative_to(ROOT)} not found; run the {cfg["name"]} CV first: {how}')
     best_cv, amount_params, cv_fold1, cv_name = setup(args.variant, champion)
+    # Imputed features: none for V4/V8; for V9 the ones in v9.json.
+    cols = (json.loads(V9_JSON.read_text(encoding='utf-8'))['imputed_features']
+            if args.variant.startswith('v9') else [])
+    if cols:
+        print(f'imputed features (label-free, imputer fitted on the training rows of each fit): {", ".join(cols)}')
     n_iter = {comp: round(np.mean(best) * EXTRA) for comp, best in best_cv.items()}
     names = {**COMPONENT_NAMES, **({AMT: 'amount log-ratio MultiQuantile, V8 settings (limit 5000)'}
-                                   if args.variant == 'v8' else {})}
+                                   if args.variant != 'v4' else {})}
     for comp, best in best_cv.items():
         print(f'{names[comp]}: CV best {" / ".join(map(str, best))}, mean {np.mean(best):.1f} '
               f'× {EXTRA} -> {n_iter[comp]} iterations')
@@ -221,12 +276,14 @@ def main():
     # check of the rule, not a fully independent estimate. For V8 the CV models trained on
     # 85% of the training part (honest-es), the check on all of it.
     tr, va = folds[0]
-    fit_raw, val_raw = train.iloc[tr], train.iloc[va]
+    fit_raw0, val_raw0 = train.iloc[tr], train.iloc[va]
+    # V9: imputer fitted on fold 1's training part only, as in its CV fold 1.
+    fit_raw, val_raw = impute_frames(cols, fit_raw0, [fit_raw0, val_raw0])
     es_fit, (es_val,) = fold_expected_spend(fit_raw, [val_raw])
-    clf, reg, (tc, tr_) = fit_two_stage(add_features(x.iloc[tr], fit_raw, es_fit), fit_raw, y[tr], categorical, 1,
-                                        n_iter, amount_params)
+    clf, reg, (tc, tr_) = fit_two_stage(make_x(cols, x.iloc[tr], fit_raw, fit_raw0, es_fit), fit_raw, y[tr],
+                                        categorical, 1, n_iter, amount_params, flag_raw=fit_raw0)
     timings += [['fold-1 check', 'classifier', n_iter[CLF], tc], ['fold-1 check', 'amount MultiQuantile', n_iter[AMT], tr_]]
-    p_va, q_va = predict(clf, reg, add_features(x.iloc[va], val_raw, es_val), val_raw)
+    p_va, q_va = predict(clf, reg, make_x(cols, x.iloc[va], val_raw, val_raw0, es_val), val_raw0)
     fold1 = _score(y[va], cap_predictions(quantile_combine(p_va, q_va, prev_or_one(val_raw)), y[tr]))
     fold1_ok = abs(fold1 - cv_fold1) <= FOLD1_TOL
     print(f'fold-1 check: refit rule {fold1:.4f} vs {cv_name} {cv_fold1:.4f} (Δ {fold1 - cv_fold1:+.4f}, '
@@ -246,11 +303,14 @@ def main():
     # with the full train playing the outer-training part. Seeds are averaged on p and on
     # the log-ratio quantiles BEFORE combining (as the CV fold average does): averaging
     # combined predictions would mix zeros and amounts into values that are no row's median.
-    es_full, (es_test,) = fold_expected_spend(train, [test])
-    x_full, x_test = add_features(x, train, es_full), add_features(xt, test, es_test)
+    # V9: one imputer fitted on the full train only (never on test rows), applied to train and test.
+    train_i, test_i = impute_frames(cols, train, [train, test])
+    es_full, (es_test,) = fold_expected_spend(train_i, [test_i])
+    x_full, x_test = make_x(cols, x, train_i, train, es_full), make_x(cols, xt, test_i, test, es_test)
     p_ref, q_ref = np.zeros(len(test)), 0.0
     for offset in SEED_OFFSETS:
-        clf, reg, (tc, tr_) = fit_two_stage(x_full, train, y, categorical, offset, n_iter, amount_params)
+        clf, reg, (tc, tr_) = fit_two_stage(x_full, train_i, y, categorical, offset, n_iter, amount_params,
+                                            flag_raw=train)
         timings += [[f'full, seed {SEED + offset}', 'classifier', n_iter[CLF], tc],
                     [f'full, seed {SEED + offset}', 'amount MultiQuantile', n_iter[AMT], tr_]]
         p, q = predict(clf, reg, x_test, test)
@@ -259,7 +319,7 @@ def main():
         print(f'seed {SEED + offset}: classifier {tc:.0f}s, amount {tr_:.0f}s', flush=True)
         step_done(f'full refit, seed {SEED + offset}')
     # Post-processing cap (amount_model.cap_predictions): clip to [0, full-train max target].
-    raw_pred = quantile_combine(p_ref, q_ref, prev_or_one(test))
+    raw_pred = quantile_combine(p_ref, q_ref, prev_or_one(test_i))
     pred = cap_predictions(raw_pred, y)
     n_capped = int((pred != raw_pred).sum())
     print(f'cap at {y.max():,.0f}: {n_capped} test row(s) changed', flush=True)
@@ -320,6 +380,10 @@ def main():
 
     # --- Results file and ../LOG.md ---
     amount_text = (f' Amount settings: `{json.dumps(amount_params)}`.' if amount_params else '')
+    if cols:
+        amount_text += (f' Label-free imputation of {", ".join(f"`{c}`" for c in cols)} (`v9_impute.py`): imputer fitted '
+                        'on fold 1\'s training part for the fold-1 check and on the full train for the refit, never on '
+                        'test rows or the target; original missing flags kept.')
     md = [f'# Task 3 {name} refit (full train)', '',
           '> **CAUTION:** A refit has no held-out rows, so there is no CV score. It is judged on Kaggle; '
           'these tables only check that it agrees with the CV models.', '',
@@ -351,7 +415,7 @@ def main():
             + (f'uncapped = earlier refit file (max |Δ| {repro:.3g}); ' if repro is not None else '')
             + f'runtime per seed clf {np.mean([t[3] for t in timings[2:] if t[1] == "classifier"]):.0f}s + amount '
             f'{np.mean([t[3] for t in timings[2:] if t[1] != "classifier"]):.0f}s; checks: {"all pass" if ok else "FAILED"}; '
-            '`refit/`, not promoted (champion rule needs fold scores)')
+            '`model/refit/`, not promoted (champion rule needs fold scores)')
     upsert_log([[datetime.date.today().isoformat(), current_branch(), cfg['log'], '—', '— (not measurable)', '—', note]])
     print(f'Wrote {cfg["results"].relative_to(ROOT)}; updated experiments/task3/LOG.md')
     step_done('sanity checks + write files')
