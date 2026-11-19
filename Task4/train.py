@@ -702,8 +702,8 @@ def load_test_images(test_frame: pd.DataFrame) -> torch.Tensor:
     return torch.from_numpy(pixels)
 
 
-def load_run_model(run_dir: Path, device: torch.device) -> tuple[nn.Module, dict, int]:
-    checkpoint_path = run_dir / 'best.pt'
+def load_run_model(run_dir: Path, device: torch.device, which: str = 'best') -> tuple[nn.Module, dict, int]:
+    checkpoint_path = run_dir / f'{which}.pt'
     if not checkpoint_path.is_file():
         raise SystemExit(f'{checkpoint_path} not found: train this run first')
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
@@ -718,10 +718,12 @@ def load_run_model(run_dir: Path, device: torch.device) -> tuple[nn.Module, dict
 def tta_logits(run_dir: Path, device: torch.device) -> None:
     """Logits of best.pt under every view in TTA_VIEWS, on its validation images and on test.
 
+    Uses final.pt (last epoch, not chosen on validation) when it exists, else best.pt.
     Saves val_logits_tta.npy / test_logits_tta.npy, shape (views, images, 5), and tta_views.json.
     Picking the views to average is done later on validation (out-of-fold) predictions only.
     """
-    model, settings, epoch = load_run_model(run_dir, device)
+    which = 'final' if (run_dir / 'final.pt').is_file() else 'best'
+    model, settings, epoch = load_run_model(run_dir, device, which)
     preprocess = Preprocess(device, settings['height'], settings['width'], 0.0, settings.get('aug', 'basic'))
     piece = settings.get('micro_batch') or settings['batch_size']
     train_frame = pd.read_csv(DATA_DIR / 'train.csv')
@@ -730,7 +732,8 @@ def tta_logits(run_dir: Path, device: torch.device) -> None:
     val_idx = np.load(run_dir / 'val_idx.npy')
     test_images = load_test_images(pd.read_csv(DATA_DIR / 'test.csv'))
     test_idx = np.arange(len(test_images))
-    print(f'=== Task 4 TTA logits for "{run_dir.name}" ({settings["model"]}, epoch {epoch}) ===', flush=True)
+    print(f'=== Task 4 TTA logits for "{run_dir.name}" ({settings["model"]}, {which}.pt = epoch {epoch}) ===',
+          flush=True)
     val_views, test_views = [], []
     for view in TTA_VIEWS:
         start = time.perf_counter()
@@ -740,7 +743,8 @@ def tta_logits(run_dir: Path, device: torch.device) -> None:
               f'  ({time.perf_counter() - start:.0f}s)', flush=True)
     np.save(run_dir / 'val_logits_tta.npy', np.stack(val_views).astype(np.float32))
     np.save(run_dir / 'test_logits_tta.npy', np.stack(test_views).astype(np.float32))
-    (run_dir / 'tta_views.json').write_text(json.dumps(TTA_VIEWS), encoding='utf-8')
+    (run_dir / 'tta_views.json').write_text(json.dumps({'views': TTA_VIEWS, 'checkpoint': which, 'epoch': epoch}),
+                                            encoding='utf-8')
 
 
 def predict_test(run_dir: Path, device: torch.device) -> None:
@@ -1052,6 +1056,12 @@ def main() -> None:
             best_score, best_logits = score, logits
             torch.save({'state_dict': model.state_dict(), 'epoch': epoch + 1, 'args': vars(args)},
                        run_dir / 'best.pt')
+        if epoch + 1 == args.epochs:
+            # The last epoch is kept too: choosing it needs no look at the validation score,
+            # so its validation result is an honest estimate (best.pt is picked on validation).
+            torch.save({'state_dict': model.state_dict(), 'epoch': epoch + 1, 'args': vars(args)},
+                       run_dir / 'final.pt')
+            np.save(run_dir / 'val_logits_final.npy', logits)
         # Everything needed to continue from the next epoch after a stop (--resume).
         save_checkpoint(last_path, {
             'settings': run_settings, 'epoch': epoch + 1, 'model': model.state_dict(),

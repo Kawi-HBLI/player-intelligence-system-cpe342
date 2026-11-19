@@ -61,11 +61,14 @@ class Run:
             raise SystemExit(f'{self.dir} has no val_idx.npy: run not finished')
         self.val_idx = np.load(self.dir / 'val_idx.npy')
         if (self.dir / 'val_logits_tta.npy').is_file():
-            self.views = json.loads((self.dir / 'tta_views.json').read_text(encoding='utf-8'))
+            info = json.loads((self.dir / 'tta_views.json').read_text(encoding='utf-8'))
+            # Newer runs record which checkpoint the TTA logits come from (final = last epoch).
+            self.views = info['views'] if isinstance(info, dict) else info
+            self.checkpoint = info.get('checkpoint', 'best') if isinstance(info, dict) else 'best'
             self.val = softmax(np.load(self.dir / 'val_logits_tta.npy'))
             self.test = softmax(np.load(self.dir / 'test_logits_tta.npy'))
         else:
-            self.views = ['id']
+            self.views, self.checkpoint = ['id'], 'best'
             self.val = softmax(np.load(self.dir / 'val_logits.npy'))[None]
             test_file = self.dir / 'test_logits.npy'
             self.test = softmax(np.load(test_file))[None] if test_file.is_file() else None
