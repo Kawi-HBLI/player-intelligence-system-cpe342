@@ -173,19 +173,19 @@ TA ประกาศว่าปรับ dataset ใหม่ หัวข้�
 
 ## ส่งงาน 3: V3 two-stage (15 พ.ย.)
 
-สคริปต์: `experiments/task3/amount_model/amount_model.py` (V3) ประวัติการทดลองทั้งหมดอยู่ใน `experiments/task3/LOG.md`
+สคริปต์: `experiments/task3/model/amount_model/amount_model.py` (V3) ประวัติการทดลองทั้งหมดอยู่ใน `experiments/task3/LOG.md`
 
 ที่เปลี่ยน: แยกงาน 3 เป็นสองขั้น ขั้นแรก classifier ทายว่าผู้เล่นจะใช้เงินไหม (p) ขั้นที่สองทายยอดเป็น `log(y / prev_month_spending)` ด้วย MAE โดยเทรนเฉพาะคนที่ใช้เงิน แถวที่ p > 0.5 ได้ยอดจากขั้นที่สอง ที่เหลือได้ 0
 
 ในเครื่อง (KFold 3 ชุดเดียวกับ baseline): OOF **0.7900** เทียบกับ baseline 0.7753 (+0.0147) ชนะทุก fold
 
-วิธีส่ง: `experiments/task3/make_submission.py` เอาไฟล์ที่ดีสุดของทีมตอนนั้น (`outputs/kaggle/best_080097.csv` public LB 0.80097 เพื่อนในทีมทำจากงานอื่น) มาเปลี่ยนแค่คอลัมน์ task3 คะแนนที่เปลี่ยนจึงมาจากงาน 3 อย่างเดียว
+วิธีส่ง: `experiments/task3/model/make_submission.py` เอาไฟล์ที่ดีสุดของทีมตอนนั้น (`outputs/kaggle/best_080097.csv` public LB 0.80097 เพื่อนในทีมทำจากงานอื่น) มาเปลี่ยนแค่คอลัมน์ task3 คะแนนที่เปลี่ยนจึงมาจากงาน 3 อย่างเดียว
 
 ได้ **0.80313** (+0.00216) เป็น public LB ดีสุดของทีมตอนนี้ ถ้าแต่ละงานมีน้ำหนักเท่ากัน งาน 3 ดีขึ้นประมาณ +0.011 (5 × 0.00216) น้อยกว่าบน OOF (+0.0147) ส่วนต่างนี้อธิบายได้ด้วย early stopping บน validation fold ที่ทำให้ OOF สูงเกินจริงเล็กน้อย และ noise ของ public LB ผลบน Kaggle จึงยืนยันว่า V3 ดีขึ้นจริง
 
-ต่อมาส่ง **V4 refit** (quantile combine ของ V4 เทรนบน train ทั้งหมด เฉลี่ย 3 seed จาก `experiments/task3/refit/refit.py`) ด้วยวิธีเดียวกันบนไฟล์ฐาน 0.80097 ได้ **0.80371** (+0.00274 จากฐาน, +0.00058 จาก V3) เป็น public LB ดีสุดของทีมตอนนี้ และใช้เป็นคำตอบงาน 3 ที่ส่งจริง ส่วนต่างจาก V3 อยู่ในระดับ noise ของ public LB จึงแยกไม่ได้ว่ามาจาก V4 หรือจากการ refit
+ต่อมาส่ง **V4 refit** (quantile combine ของ V4 เทรนบน train ทั้งหมด เฉลี่ย 3 seed จาก `experiments/task3/model/refit/refit.py`) ด้วยวิธีเดียวกันบนไฟล์ฐาน 0.80097 ได้ **0.80371** (+0.00274 จากฐาน, +0.00058 จาก V3) เป็น public LB ดีสุดของทีมตอนนี้ และใช้เป็นคำตอบงาน 3 ที่ส่งจริง ส่วนต่างจาก V3 อยู่ในระดับ noise ของ public LB จึงแยกไม่ได้ว่ามาจาก V4 หรือจากการ refit
 
-ล่าสุด (16 พ.ย.) ส่ง **V8 refit** (V4 ที่ tune amount model ด้วย Optuna ภายใต้ honest early stopping และ cap ที่ 300,000 จาก `experiments/task3/tuning/`) บนไฟล์ฐานของเพื่อนในทีม 0.80676 ซึ่งคอลัมน์ task3 เป็น V4 refit เปลี่ยนแค่ task3 ได้ **0.80684** (+0.00008) เป็น public LB ดีสุดของทีม และ V8 เป็น model สุดท้ายของงาน 3
+ล่าสุด (16 พ.ย.) ส่ง **V8 refit** (V4 ที่ tune amount model ด้วย Optuna ภายใต้ honest early stopping และ cap ที่ 300,000 จาก `experiments/task3/model/tuning/`) บนไฟล์ฐานของเพื่อนในทีม 0.80676 ซึ่งคอลัมน์ task3 เป็น V4 refit เปลี่ยนแค่ task3 ได้ **0.80684** (+0.00008) เป็น public LB ดีสุดของทีม และ V8 เป็น model สุดท้ายของงาน 3
 
 | ขั้น | เทียบกับ | OOF ในเครื่อง | public LB |
 |---|---|---|---|

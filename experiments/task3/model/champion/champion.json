@@ -3,7 +3,7 @@
   "variant": "v8",
   "protocol": "honest-es",
   "protocol_note": "early stopping on a fixed 85%/15% fit/es split of each outer-training part (seed 342 + fold, stratified on y > 0 for two-stage models); the outer validation fold is only scored; predictions capped at the outer-training max target",
-  "script": "experiments/task3/tuning/tuning.py",
+  "script": "experiments/task3/model/tuning/tuning.py",
   "branch": "task3/tuning",
   "commit": "0914b69+dirty",
   "commit_note": "HEAD when the run started; the promotion itself lands in the next commit",
@@ -33,7 +33,7 @@
     "protocol_note": "early stopping on the scored outer validation fold (slightly optimistic OOF)",
     "name": "V4 quantile combine, q = 1 − 0.5/p, t=0.5",
     "variant": "v4",
-    "script": "experiments/task3/amount_model/amount_model.py",
+    "script": "experiments/task3/model/amount_model/amount_model.py",
     "branch": "task3/quantile-combine",
     "commit": "2c9b869",
     "fold_scores": [

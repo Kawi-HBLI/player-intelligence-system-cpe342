@@ -9,12 +9,12 @@ V3's classifier but predicts amount QUANTILES and combines them with the L1-opti
 (see "V4: quantile combine" below); V4s rescales that rule (optimistic, tuned on OOF).
 
 Run from the repo root:
-    python experiments/task3/amount_model/amount_model.py [--variants v1,v2,v3,v3a,v3b,v4,v4s] [--quick] [--promote]
+    python experiments/task3/model/amount_model/amount_model.py [--variants v1,v2,v3,v3a,v3b,v4,v4s] [--quick] [--promote]
 Prints the summary, error-by-bucket and stage diagnostics; rewrites the tables in
-experiments/task3/amount_model/amount_model_results.md (the hand-written interpretation
+experiments/task3/model/amount_model/amount_model_results.md (the hand-written interpretation
 is kept); upserts one row per new variant in experiments/task3/LOG.md; writes OOF and test
 predictions to outputs/experiments/task3_<variant>/ (gitignored). Every variant is compared
-fold by fold against the baseline AND the current champion (experiments/task3/champion/);
+fold by fold against the baseline AND the current champion (experiments/task3/model/champion/);
 --promote makes the best variant that beats the champion on all folds the new champion.
 """
 import argparse
@@ -53,10 +53,11 @@ ALPHAS = np.round(np.arange(0.05, 0.5 + 1e-9, 0.05), 2)  # V4 amount quantiles (
 MQ_LOSS = 'MultiQuantile:alpha=' + ','.join(f'{a:g}' for a in ALPHAS)
 S_GRID = np.round(np.arange(0.6, 1.4 + 1e-9, 0.1), 1)  # V4s scale on 0.5/p; s = 1 is V4
 N_TEST = 25_889
-TASK3 = Path(__file__).resolve().parents[1]
+MODEL = Path(__file__).resolve().parents[1]  # experiments/task3/model/
+TASK3 = MODEL.parent  # experiments/task3/ (eda/, model/, LOG.md)
 RESULTS = Path(__file__).with_name('amount_model_results.md')
 LOG_FILE = TASK3 / 'LOG.md'  # one log for all Task 3 experiments
-CHAMPION = TASK3 / 'champion'  # task3_oof.csv + champion.json of the current best model
+CHAMPION = MODEL / 'champion'  # task3_oof.csv + champion.json of the current best model
 OUT = ROOT / 'outputs' / 'experiments'
 INTERPRETATION = '## Interpretation'
 
@@ -233,7 +234,7 @@ def quantile_combine(p, log_q, prev, s=1.0, alphas=ALPHAS, q_min=None, q_map=Non
     """0 if p ≤ 0.5, else prev × exp(log-ratio quantile at q = 1 − s·0.5/p).
 
     q is clipped to [q_min, alphas[-1]] (q_min defaults to the lowest modelled alpha, 0.05
-    for V4). The keyword arguments are for experiments/task3/quantile_calib (V7): `alphas`
+    for V4). The keyword arguments are for experiments/task3/model/quantile_calib (V7): `alphas`
     is the model's alpha grid, `q_map` an optional monotone remap of q (coverage
     calibration) applied after the clip, its result clipped to the modelled alphas.
     The defaults give V4 exactly.
@@ -247,7 +248,7 @@ def quantile_combine(p, log_q, prev, s=1.0, alphas=ALPHAS, q_min=None, q_map=Non
     return np.where(p > 0.5, prev * np.exp(value), 0.0)
 
 
-# --- Post-processing cap (every Task 3 run from experiments/task3/tuning on, and refit.py) ---
+# --- Post-processing cap (every Task 3 run from experiments/task3/model/tuning on, and refit.py) ---
 # Final predictions are clipped to [0, max target of the training data] (300,000 THB; the
 # train target is clipped there: 15 rows sit exactly on it). Why it is always safe: for a
 # row with 0 ≤ y ≤ cap, clipping moves ŷ towards the interval that contains y, so
@@ -355,7 +356,7 @@ def load_champion(train, base):
         # validation fold ("val-es"); the champion was scored under another protocol, so a
         # fold-by-fold comparison mixes protocols. See experiments/task3/LOG.md.
         print(f'WARNING: champion "{meta["name"]}" uses protocol {meta["protocol"]}, this script uses val-es; '
-              'champion comparisons and --promote mix protocols. Use experiments/task3/tuning/ (honest-es).')
+              'champion comparisons and --promote mix protocols. Use experiments/task3/model/tuning/ (honest-es).')
     oof = pd.read_csv(CHAMPION / 'task3_oof.csv')
     assert (oof['player_id'].to_numpy() == train['player_id'].to_numpy()).all(), 'champion OOF row order differs'
     assert np.allclose(oof['target'].to_numpy(), train[TARGET].to_numpy()), 'champion OOF targets differ'
@@ -363,8 +364,8 @@ def load_champion(train, base):
 
 
 def promote(variant, label, oof_frame, fold_scores, oof_score, previous,
-            script='experiments/task3/amount_model/amount_model.py'):
-    """Write experiments/task3/champion/ for the new champion (commit it with LOG.md).
+            script='experiments/task3/model/amount_model/amount_model.py'):
+    """Write experiments/task3/model/champion/ for the new champion (commit it with LOG.md).
 
     `previous` is the outgoing champion's meta. Its Kaggle results move into the new
     file's `lb_history`, so a promotion never drops a measured leaderboard score: the
@@ -694,7 +695,7 @@ def main():
           'is slightly optimistic; differences between rows are still comparable. Rows marked '
           '"OOF-tuned, optimistic" pick the threshold on the same OOF they are scored on.',
           '',
-          f'Generated by `python experiments/task3/amount_model/amount_model.py --variants {",".join(variants)}'
+          f'Generated by `python experiments/task3/model/amount_model/amount_model.py --variants {",".join(variants)}'
           f'{" --quick" if args.quick else ""}{" --promote" if args.promote else ""}`. Folds: `KFold({FOLDS}, '
           f'shuffle=True, random_state={SEED})`, same as the baseline. Metric: `_score` from `pis/tabular.py`. '
           f'`expected_spend` = `{PREV}` × median `y / {PREV}` among spenders per segment×VIP '
@@ -705,7 +706,7 @@ def main():
           f'[{ALPHAS[0]:.2f}, {ALPHAS[-1]:.2f}], linear interpolation), 0 if p ≤ 0.5; V4s scans s = '
           f'{S_GRID[0]:.1f}–{S_GRID[-1]:.1f} step 0.1 in q = 1 − s·0.5/p.',
           '',
-          f'Champion at the start of this run: **{champ_meta["name"]}** (`experiments/task3/champion/`). '
+          f'Champion at the start of this run: **{champ_meta["name"]}** (`experiments/task3/model/champion/`). '
           'A variant is promoted only if it beats the champion on all 3 folds (t = 0.5 rows only). '
           + (f'**Promoted in this run: {promoted}.**' if promoted else 'Champion unchanged by this run.'),
           '',

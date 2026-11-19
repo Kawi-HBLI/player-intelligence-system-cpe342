@@ -20,9 +20,9 @@ V7a / V7b / V7 also clip the final prediction at the largest target in the outer
 part (the target is capped at 300,000); the rows affected are reported.
 
 Run from the repo root:
-    python experiments/task3/quantile_calib/quantile_calib.py [--quick] [--promote]
+    python experiments/task3/model/quantile_calib/quantile_calib.py [--quick] [--promote]
 Prints the summary, bucket, coverage and runtime tables; writes
-experiments/task3/quantile_calib/quantile_calib_results.md (the hand-written
+experiments/task3/model/quantile_calib/quantile_calib_results.md (the hand-written
 Interpretation section is kept), rows in experiments/task3/LOG.md and OOF/test
 predictions in outputs/experiments/task3_<variant>/ (gitignored). --quick (250 trees per
 model) only prints. --promote makes the chosen winner (see "Promotion") the champion.
@@ -62,7 +62,7 @@ TIE = 0.0003  # winners closer than this in OOF count as equal: the simplest one
 SIMPLICITY = ['v7a', 'v7b', 'v7']  # simplest first: V7a needs no extra fits, V7b / V7 need the inner fits
 RESULTS = Path(__file__).with_name('quantile_calib_results.md')
 INTERPRETATION = '## Interpretation'
-SCRIPT = 'experiments/task3/quantile_calib/quantile_calib.py'
+SCRIPT = 'experiments/task3/model/quantile_calib/quantile_calib.py'
 # variant -> q_min (lower clip of the nominal q), calibrated (remap q), cap (clip at the outer-train max).
 VARIANTS = {'v7_grid': dict(q_min=0.05, calibrated=False, cap=False),
             'v7a': dict(q_min=0.01, calibrated=False, cap=True),
