@@ -6,7 +6,7 @@ Dates are when the result was first committed (from git history). Fold scores us
 metric is `_score` from `pis/tabular.py`. LB = Kaggle leaderboard (— = not submitted).
 
 Layout: `eda/` holds the notebooks (`eda.ipynb`, `missing_eda.ipynb`); `model/` holds one folder per model experiment
-(`oracle/`, `amount_model/`, `refit/`, `clf_features/`, `ensemble/`, `quantile_calib/`, `tuning/`), each with its script
+(`oracle/`, `amount_model/`, `refit/`, `clf_features/`, `ensemble/`, `quantile_calib/`, `tuning/`, `v9_impute/`), each with its script
 and its `*_results.md`, plus `champion/` and `make_submission.py`. This log is shared and scripts append to it.
 
 Dependencies: the pipeline (`python run.py ...`) needs only `requirements.txt`. The experiment scripts also need
@@ -15,8 +15,9 @@ Dependencies: the pipeline (`python run.py ...`) needs only `requirements.txt`. 
 Champion: `model/champion/` holds the current best model's OOF (`task3_oof.csv`) and `champion.json`.
 Every experiment is compared fold by fold against both the baseline and the champion. A model is
 promoted only if it beats the champion on all 3 folds (t = 0.5 rows, never OOF-tuned ones); the
-promotion updates `model/champion/` and this log in the same commit. Current champion: **V8** (step 14, protocol honest-es;
-V4-honest before it, which is V4 of step 9 re-scored under honest-es; Kaggle submission: V8 refit, 0.80684, the final Task 3 model).
+promotion updates `model/champion/` and this log in the same commit. Current champion: **V9a** (step 15, protocol honest-es:
+V8 + label-free imputation of `prev_month_spending`; V8 before it, step 14). Kaggle: the V9a refit file
+`outputs/kaggle/best_082343_task3_v9a_refit.csv` is built but not submitted yet; the last submitted Task 3 model is the V8 refit (0.80684).
 
 Protocols: steps 1–13 early-stop on the outer validation fold that is also scored (`val-es`, as in `pis/tabular.py`),
 so their OOF scores are slightly optimistic. From step 14 on, scores use `honest-es`: each outer-training part is split
@@ -29,7 +30,22 @@ Known issue (step 11, `model/clf_features/clf_features.py`, a negative-result sc
 
 ## Reproduce the final Task 3 predictions
 
-The final Task 3 model is the V8 refit. It can be rebuilt from the repo alone: no Optuna, no `outputs/` from another
+**V9a (current champion).** From a fresh clone, after the venv setup below:
+
+```powershell
+.\.venv\Scripts\python.exe experiments/task3/model/v9_impute/v9_impute.py --threads 12
+.\.venv\Scripts\python.exe experiments/task3/model/refit/refit.py --variant v9a --threads 12
+```
+
+- `v9_impute.py` (about 17 min) re-runs V8 with both seeds and stops unless it matches `model/tuning/v8.json`, then runs V9a/V9b;
+  expected V9a 0.801877 / 0.787220 / 0.795327, OOF 0.794729 (seed 1342: OOF 0.794744). It writes `outputs/experiments/task3_v9a/`
+  (OOF, test predictions, classifier p) and rewrites `model/v9_impute/v9_impute_results.md` and the step-15 rows here
+  (`git checkout` them unless the results changed). Without `--promote` it does not touch `model/champion/`.
+- `refit.py --variant v9a` (about 6 min) must pass all 7 checks; it writes `outputs/experiments/task3_v9a_refit/task3_predictions.csv`.
+  Expected: fold-1 check 0.8020, sum 270,696,618 THB, median of non-zero 2,838.21, Spearman vs CV 0.9967
+  (as in `model/refit/refit_v9a_results.md`). The imputer for the refit is fitted on the full train only.
+
+**V8 refit (previous champion, Kaggle 0.80684).** It can be rebuilt from the repo alone: no Optuna, no `outputs/` from another
 machine. `v8_cv.py` rebuilds V8's CV (honest-es classifier p, OOF, per-fold test predictions) from
 `model/tuning/v8.json` and checks the fold scores against `model/champion/champion.json`; `refit.py` then trains on the full train.
 From a fresh clone, with the competition data in `../cpe342-kaggle-main` (see the root README):
@@ -96,3 +112,8 @@ python -m venv .venv
 | 14 | 2026-11-15 | task3/tuning | V8 re-run: same model, seed 1342 + fold (selection-noise check) | 0.7983 / 0.7846 / 0.7934 | 0.7920 | — | vs V4-honest: +0.0009 (+0.00132 / +0.00059 / +0.00080), wins all folds: yes; mean of the 2 seed runs 0.7921; V4-honest with the same seed scheme: 0.7916 (+0.0004, seed noise) |
 | 14 | 2026-11-15 | task3/tuning | V8 refit (full train, 3 seeds, cap) | — | — (not measurable) | 0.80684 (base 0.80676, +0.00008) | no CV possible, judged on Kaggle; iterations clf 208, amount 3277 (CV mean × 1.2); cap: 1 test row(s) changed; fold-1 check 0.7991 vs V8 CV (honest-es) 0.7987 (+0.0004); vs V8 CV test preds: Spearman 0.9966, zero share 0.5035 vs 0.5068, sum +0.21%, median non-zero 2,848 vs 2,874, mean p 0.5176 vs 0.5177; uncapped = earlier refit file (max |Δ| 0); runtime per seed clf 2s + amount 47s; checks: all pass; `model/refit/`, not promoted (champion rule needs fold scores) |
 | 14 | 2026-11-15 | task3/tuning | V4 refit + cap (full train, 3 seeds, predictions clipped to [0, 300,000]) | — | — (not measurable) | — | no CV possible, judged on Kaggle; iterations clf 205, amount 1035 (CV mean × 1.2); cap: 1 test row(s) changed; fold-1 check 0.7985 vs V4 CV (val-es) 0.7982 (+0.0003); vs V4 CV test preds: Spearman 0.9974, zero share 0.5035 vs 0.5052, sum +0.19%, median non-zero 2,859 vs 2,867, mean p 0.5176 vs 0.5176; uncapped = earlier refit file (max |Δ| 0); runtime per seed clf 2s + amount 47s; checks: all pass; `model/refit/`, not promoted (champion rule needs fold scores) |
+| 15 | 2026-11-19 | task3/v9-impute | V9a: V8 + label-free imputation of prev_month_spending (in-fold, outer-train rows only), amount seed 342 + fold | 0.8019 / 0.7872 / 0.7953 | 0.7947 | — | protocol honest-es; amount seed 342 + fold; vs V8 same seed: +0.0032 / +0.0024 / +0.0021 (OOF +0.0026, wins all folds: yes); prev-missing rows 0.7982 vs V8 0.7582; imputer R² 0.994+ (prev); eligible; **promoted**; `model/v9_impute/` |
+| 15 | 2026-11-19 | task3/v9-impute | V9a: V8 + label-free imputation of prev_month_spending (in-fold, outer-train rows only), amount seed 1342 + fold | 0.8019 / 0.7872 / 0.7954 | 0.7947 | — | protocol honest-es; amount seed 1342 + fold; vs V8 same seed: +0.0036 / +0.0025 / +0.0020 (OOF +0.0027, wins all folds: yes); prev-missing rows 0.7982 vs V8 0.7566; imputer R² 0.994+ (prev); eligible; `model/v9_impute/` |
+| 15 | 2026-11-19 | task3/v9-impute | V9b: V8 + label-free imputation of prev / historical / avg_transaction_value (in-fold), amount seed 342 + fold | 0.8019 / 0.7875 / 0.7954 | 0.7949 | — | protocol honest-es; amount seed 342 + fold; vs V8 same seed: +0.0033 / +0.0027 / +0.0022 (OOF +0.0027, wins all folds: yes); prev-missing rows 0.7984 vs V8 0.7582; imputer R² 0.994+ (prev); eligible; `model/v9_impute/` |
+| 15 | 2026-11-19 | task3/v9-impute | V9b: V8 + label-free imputation of prev / historical / avg_transaction_value (in-fold), amount seed 1342 + fold | 0.8019 / 0.7874 / 0.7954 | 0.7948 | — | protocol honest-es; amount seed 1342 + fold; vs V8 same seed: +0.0036 / +0.0027 / +0.0020 (OOF +0.0028, wins all folds: yes); prev-missing rows 0.7984 vs V8 0.7566; imputer R² 0.994+ (prev); eligible; `model/v9_impute/` |
+| 15 | 2026-11-19 | task3/v9-impute | V9a refit (full train, 3 seeds, cap, imputer fitted on the full train) | — | — (not measurable) | — | no CV possible, judged on Kaggle; iterations clf 133, amount 2454 (CV mean × 1.2); cap: 1 test row(s) changed; fold-1 check 0.8020 vs V9a CV (honest-es) 0.8019 (+0.0002); vs V9a CV test preds: Spearman 0.9967, zero share 0.5027 vs 0.5066, sum +0.11%, median non-zero 2,838 vs 2,868, mean p 0.5177 vs 0.5177; runtime per seed clf 3s + amount 92s; checks: all pass; `model/refit/`, not promoted (champion rule needs fold scores) |
