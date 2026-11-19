@@ -35,6 +35,9 @@ PRESET_VIEW_SETS = {
     'zoom': ['id', 'zoom1.12', 'zoom0.9'],
     'flip+rot8': ['id', 'hflip', 'rot+8', 'rot-8'],
     'rot8+zoom': ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9'],
+    'size': ['id', 'size1.125', 'size1.25'],
+    'rot8+size': ['id', 'rot+8', 'rot-8', 'size1.125', 'size1.25'],
+    'rot8+zoom+size': ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9', 'size1.125', 'size1.25'],
     'all': list(t4.TTA_VIEWS),
 }
 

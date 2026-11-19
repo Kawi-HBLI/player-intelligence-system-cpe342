@@ -18,7 +18,16 @@ class TTAViewTest(unittest.TestCase):
 
     def test_views_keep_shape(self):
         for view in t4.TTA_VIEWS[1:]:
+            if view.startswith('size'):
+                continue  # size views change the input size inside Preprocess, see the next test
             self.assertEqual(t4.apply_view(self.batch, view).shape, self.batch.shape, view)
+
+    def test_size_views_resize_in_preprocess(self):
+        preprocess = t4.Preprocess(torch.device('cpu'), 128, 256, 0.0)
+        images = (torch.rand(2, 3, 120, 230) * 255).to(torch.uint8)
+        self.assertEqual(tuple(preprocess(images, False, view='size1.25').shape[2:]), (160, 320))
+        self.assertEqual(tuple(preprocess(images, False, view='size0.875').shape[2:]), (112, 224))
+        self.assertEqual(tuple(preprocess(images, False, view='id').shape[2:]), (128, 256))
 
     def test_hflip_twice_is_identity(self):
         self.assertTrue(torch.equal(t4.apply_view(t4.apply_view(self.batch, 'hflip'), 'hflip'), self.batch))

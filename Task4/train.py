@@ -390,8 +390,11 @@ class Preprocess:
     def __call__(self, batch_u8: torch.Tensor, train: bool, view: str = 'id',
                  size: tuple[int, int] | None = None) -> torch.Tensor:
         batch = batch_u8.to(self.device, non_blocking=True).float().div_(255)
+        if view.startswith('size'):  # TTA: whole image at another input size (model sees more/less detail)
+            factor = float(view[4:])
+            size = (int(round(self.size[0] * factor / 16)) * 16, int(round(self.size[1] * factor / 16)) * 16)
         batch = F.interpolate(batch, size=size or self.size, mode='bilinear', align_corners=False)
-        if view != 'id':
+        if view != 'id' and not view.startswith('size'):
             batch = apply_view(batch, view)
         if train:
             if self.aug == 'robust':
@@ -438,7 +441,8 @@ def predict_logits(model: nn.Module, images: torch.Tensor, indices: np.ndarray,
 # Test-time augmentation (TA ruling 15 Nov: allowed). Each view is a fixed, label-preserving
 # change of the image; the softmax over several views is averaged. Which views to average
 # is chosen on out-of-fold training predictions only (Task4/oof.py).
-TTA_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9']
+TTA_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9',
+             'size0.875', 'size1.125', 'size1.25']
 
 
 def affine(batch: torch.Tensor, turn: float, zoom: float) -> torch.Tensor:
