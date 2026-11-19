@@ -8,6 +8,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Task4'))
 import oof  # noqa: E402
+import stress  # noqa: E402
 import train as t4  # noqa: E402
 
 
@@ -55,6 +56,22 @@ class OOFHelperTest(unittest.TestCase):
         for views in oof.PRESET_VIEW_SETS.values():
             self.assertTrue(set(views) <= set(t4.KNOWN_VIEWS))
         self.assertTrue(set(t4.TTA_VIEWS) <= set(t4.KNOWN_VIEWS))
+
+
+class StressDamageTest(unittest.TestCase):
+    def test_every_damage_keeps_shape_range_and_repeats(self):
+        batch = torch.rand(2, 3, 32, 64)
+        for kind in stress.DAMAGES:
+            first = stress.damage(batch.clone(), kind, torch.Generator().manual_seed(1))
+            again = stress.damage(batch.clone(), kind, torch.Generator().manual_seed(1))
+            self.assertEqual(first.shape, batch.shape, kind)
+            self.assertGreaterEqual(float(first.min()), 0.0, kind)
+            self.assertLessEqual(float(first.max()), 1.0 + 1e-6, kind)
+            self.assertTrue(torch.allclose(first, again), kind)
+
+    def test_clean_is_untouched(self):
+        batch = torch.rand(1, 3, 8, 16)
+        self.assertTrue(torch.equal(stress.damage(batch, 'clean', torch.Generator()), batch))
 
 
 if __name__ == '__main__':
