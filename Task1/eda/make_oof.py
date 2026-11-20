@@ -2,9 +2,9 @@ r"""Save OOF predictions of the current Task 1 model for the missing-value EDA.
 
 Runs the unchanged pipeline (pis.tabular.train_task through run.py) with the folds the
 README tables use (StratifiedKFold 3, seed 342) and copies the OOF to
-outputs/experiments/task1_oof.csv (gitignored). README: AUC 0.8926, tuned macro F2 0.7807; this
-laptop gives AUC 0.8922 / 0.7808, and so does the README's own Task1/experiments.py here
-(environment difference, see the notebook).
+outputs/experiments/task1_oof.csv (gitignored). This laptop gives AUC 0.8922 (README 0.8926, an
+environment difference: the README's own Task1/experiments.py gives 0.8922 here too). Since
+task1-2 commit 080d9a0 the threshold maximises cheater-class F2: threshold 0.1805, F2 0.8381.
 
     .\.venv\Scripts\python.exe Task1/eda/make_oof.py --threads 12
 
