@@ -1,4 +1,4 @@
-"""Task 1 entry point: anti-cheat detection (binary classification, macro F2).
+"""Task 1 entry point: anti-cheat detection (binary classification, F2 of the cheater class).
 
 Run from the repository root:  python Task1/train.py
 Extra arguments are passed on to run.py (see `python run.py --help`).

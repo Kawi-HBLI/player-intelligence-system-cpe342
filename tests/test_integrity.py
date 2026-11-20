@@ -30,14 +30,22 @@ class IntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(_score(np.array([0,100,200]),np.array([0,80,220])), 1/(1+40/300))
         self.assertEqual(_score(np.array([0,100,200]),np.zeros(3)), 0.5)
 
-    def test_threshold_handles_ties_and_optimizes_macro(self):
+    def test_threshold_handles_ties_and_optimizes_cheater_f2(self):
         y = np.array([0,0,0,1,1,1,0,1])
         p = np.array([.1,.2,.5,.5,.8,.9,.8,.2])
         threshold, score = _threshold(y,p)
-        candidates = np.r_[p, np.nextafter(max(p),np.inf)]
-        expected = max(fbeta_score(y,p>=t,beta=2,average='macro') for t in candidates)
+        expected = max(fbeta_score(y,p>=t,beta=2) for t in p)
         self.assertAlmostEqual(score,expected)
-        self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2,average='macro'))
+        self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2))
+
+    def test_threshold_differs_from_macro_choice(self):
+        # Low threshold wins for F2 on the cheater class even when macro F2 prefers a higher one.
+        y = np.array([1,0,1,0,0,0,0,1,0,0])
+        p = np.array([.9,.8,.7,.6,.5,.4,.3,.2,.1,.05])
+        threshold, _ = _threshold(y,p)
+        self.assertEqual(threshold, .2)
+        best_macro = max(p, key=lambda t: fbeta_score(y,p>=t,beta=2,average='macro'))
+        self.assertGreater(best_macro, threshold)
 
     def test_task1_range_rules_count_certain_cases_and_ignore_missing(self):
         frame = pd.DataFrame({'crosshair_placement':[0.81,0.95,np.nan],'reports_received':[4,25,np.nan],
