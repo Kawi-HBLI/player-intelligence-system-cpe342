@@ -68,7 +68,15 @@
       "base_public": 0.80676,
       "delta": 8e-05,
       "method": "task3 column swap via make_submission.py; base task3 was V4 refit"
+    },
+    {
+      "variant": "v9a_refit",
+      "date": "2026-11-20",
+      "public": 0.82369,
+      "base_public": 0.82343,
+      "delta": 0.00026,
+      "method": "task3 column swap via make_submission.py; base task3 was V8 refit"
     }
   ],
-  "submission": "v8_refit"
+  "submission": "v9a_refit"
 }
