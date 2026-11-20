@@ -66,6 +66,9 @@ def parse_args() -> argparse.Namespace:
                              'predict = label the test images with best.pt of --run-name; '
                              'ensemble = average the runs in --members and save the result as --run-name; '
                              'tta = logits of best.pt on its validation images and on test under every TTA view')
+    parser.add_argument('--tta-views', default='',
+                        help='comma list of views for --mode tta (default TTA_VIEWS); views already '
+                             'saved for the same checkpoint are kept and only the new ones are computed')
     parser.add_argument('--members', default='',
                         help='comma-separated finished runs for --mode ensemble')
     parser.add_argument('--run-name', default='r0_baseline')
@@ -442,7 +445,7 @@ def predict_logits(model: nn.Module, images: torch.Tensor, indices: np.ndarray,
 # change of the image; the softmax over several views is averaged. Which views to average
 # is chosen on out-of-fold training predictions only (Task4/oof.py).
 KNOWN_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9',
-               'size0.875', 'size1.125', 'size1.25']
+               'size0.875', 'size1.125', 'size1.25', 'auto']
 # Views computed by --mode tta. Chosen on scene fold 0 (training images only): +-8 degree turns and
 # zoom in/out helped every model tried; flip hurt (screen text is mirrored) and size views were mixed.
 TTA_VIEWS = ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9']
@@ -458,7 +461,21 @@ def affine(batch: torch.Tensor, turn: float, zoom: float) -> torch.Tensor:
     return F.grid_sample(batch, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
 
 
+def autocontrast(batch: torch.Tensor) -> torch.Tensor:
+    """Per image: stretch its own 1st..99th brightness percentile to the full range, gain at most 4.
+
+    Uses only the pixels of that one image. Aimed at dark and low-contrast frames, which hold most
+    of the out-of-fold mistakes (training images only); well-exposed frames barely change.
+    """
+    gray = (0.299 * batch[:, 0] + 0.587 * batch[:, 1] + 0.114 * batch[:, 2]).flatten(1).float()
+    low = torch.quantile(gray, 0.01, dim=1).view(-1, 1, 1, 1)
+    high = torch.quantile(gray, 0.99, dim=1).view(-1, 1, 1, 1)
+    return ((batch - low) / (high - low).clamp(min=0.25)).clamp(0, 1)
+
+
 def apply_view(batch: torch.Tensor, view: str) -> torch.Tensor:
+    if view == 'auto':
+        return autocontrast(batch)
     if view == 'hflip':
         return batch.flip(3)
     if view.startswith('rot'):
@@ -595,7 +612,7 @@ NEAR_COPY_MIN_CONTRAST = 0.08  # near-black / washed-out frames look alike witho
 NEAR_COPY_MAX_GROUP = 5  # larger clusters were chains of unrelated dark or noisy frames
 SCENES_PER_GAME = 20  # look-alike groups per game for --split scene
 # Options that never change how a model is trained; --resume ignores them when comparing settings.
-NOT_TRAINING_SETTINGS = ('resume', 'cpu_threads', 'low_priority', 'members', 'data_root')
+NOT_TRAINING_SETTINGS = ('resume', 'cpu_threads', 'low_priority', 'members', 'data_root', 'tta_views')
 
 
 def near_copy_groups(images: torch.Tensor, labels: np.ndarray, sha256: list[str], preprocess: Preprocess,
@@ -718,14 +735,30 @@ def load_run_model(run_dir: Path, device: torch.device, which: str = 'best') -> 
     return model, settings, int(checkpoint['epoch'])
 
 
-def tta_logits(run_dir: Path, device: torch.device) -> None:
-    """Logits of best.pt under every view in TTA_VIEWS, on its validation images and on test.
+def tta_logits(run_dir: Path, device: torch.device, views: list[str] | None = None) -> None:
+    """Logits under each view (default TTA_VIEWS) on the run's validation images and on test.
 
     Uses final.pt (last epoch, not chosen on validation) when it exists, else best.pt.
     Saves val_logits_tta.npy / test_logits_tta.npy, shape (views, images, 5), and tta_views.json.
+    Views already saved for the same checkpoint are kept; only missing views are computed and appended.
     Picking the views to average is done later on validation (out-of-fold) predictions only.
     """
+    views = views or TTA_VIEWS
+    unknown = [v for v in views if v not in KNOWN_VIEWS]
+    if unknown:
+        raise SystemExit(f'unknown TTA views {unknown}; known: {KNOWN_VIEWS}')
     which = 'final' if (run_dir / 'final.pt').is_file() else 'best'
+    done_views, old_val, old_test = [], None, None
+    info_file = run_dir / 'tta_views.json'
+    if (run_dir / 'val_logits_tta.npy').is_file() and info_file.is_file():
+        info = json.loads(info_file.read_text(encoding='utf-8'))
+        if isinstance(info, dict) and info.get('checkpoint') == which:
+            done_views = info['views']
+            old_val, old_test = np.load(run_dir / 'val_logits_tta.npy'), np.load(run_dir / 'test_logits_tta.npy')
+    todo = [v for v in views if v not in done_views]
+    if not todo:
+        print(f'{run_dir.name}: views {views} already saved')
+        return
     model, settings, epoch = load_run_model(run_dir, device, which)
     preprocess = Preprocess(device, settings['height'], settings['width'], 0.0, settings.get('aug', 'basic'))
     piece = settings.get('micro_batch') or settings['batch_size']
@@ -738,16 +771,19 @@ def tta_logits(run_dir: Path, device: torch.device) -> None:
     print(f'=== Task 4 TTA logits for "{run_dir.name}" ({settings["model"]}, {which}.pt = epoch {epoch}) ===',
           flush=True)
     val_views, test_views = [], []
-    for view in TTA_VIEWS:
+    for view in todo:
         start = time.perf_counter()
         val_views.append(predict_logits(model, images, val_idx, preprocess, piece, view))
         test_views.append(predict_logits(model, test_images, test_idx, preprocess, piece, view))
         print(f'      {view:9s} validation macro F1 {macro_f1(labels[val_idx], val_views[-1].argmax(1)):.4f}'
               f'  ({time.perf_counter() - start:.0f}s)', flush=True)
-    np.save(run_dir / 'val_logits_tta.npy', np.stack(val_views).astype(np.float32))
-    np.save(run_dir / 'test_logits_tta.npy', np.stack(test_views).astype(np.float32))
-    (run_dir / 'tta_views.json').write_text(json.dumps({'views': TTA_VIEWS, 'checkpoint': which, 'epoch': epoch}),
-                                            encoding='utf-8')
+    new_val, new_test = np.stack(val_views).astype(np.float32), np.stack(test_views).astype(np.float32)
+    if old_val is not None:
+        new_val, new_test = np.concatenate([old_val, new_val]), np.concatenate([old_test, new_test])
+    np.save(run_dir / 'val_logits_tta.npy', new_val)
+    np.save(run_dir / 'test_logits_tta.npy', new_test)
+    info_file.write_text(json.dumps({'views': done_views + todo, 'checkpoint': which, 'epoch': epoch}),
+                         encoding='utf-8')
 
 
 def predict_test(run_dir: Path, device: torch.device) -> None:
@@ -889,7 +925,7 @@ def main() -> None:
         predict_test(run_dir, device)
         return
     if args.mode == 'tta':
-        tta_logits(run_dir, device)
+        tta_logits(run_dir, device, [v for v in args.tta_views.split(',') if v] or None)
         return
     if args.mode == 'ensemble':
         print(f'=== Task 4 ensemble "{args.run_name}" ===', flush=True)

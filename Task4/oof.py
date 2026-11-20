@@ -38,6 +38,8 @@ PRESET_VIEW_SETS = {
     'size': ['id', 'size1.125', 'size1.25'],
     'rot8+size': ['id', 'rot+8', 'rot-8', 'size1.125', 'size1.25'],
     'rot8+zoom+size': ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9', 'size1.125', 'size1.25'],
+    'auto': ['id', 'auto'],
+    'rot8+zoom+auto': ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9', 'auto'],
     'all': list(t4.KNOWN_VIEWS),
 }
 

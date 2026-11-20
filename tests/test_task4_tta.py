@@ -41,6 +41,13 @@ class TTAViewTest(unittest.TestCase):
         self.assertLess(float(turned[0, :, 0, 0].max()), 0.5)
         self.assertGreater(float(turned[0, :, 8, 16].min()), 0.99)
 
+    def test_autocontrast_brightens_dark_frames_only(self):
+        grey = torch.rand(1, 1, 16, 32).expand(1, 3, 16, 32)  # brightness spans the full range
+        dark = grey * 0.2
+        self.assertGreater(float(t4.apply_view(dark, 'auto').mean()), float(dark.mean()) * 2)
+        full = grey
+        self.assertLess(float((t4.apply_view(full, 'auto') - full).abs().mean()), 0.03)
+
     def test_unknown_view_raises(self):
         with self.assertRaises(ValueError):
             t4.apply_view(self.batch, 'spin')
