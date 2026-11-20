@@ -64,6 +64,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--width', type=int, default=256)
     parser.add_argument('--lr-backbone', type=float, default=3e-5)
     parser.add_argument('--lr-head', type=float, default=3e-4)
+    parser.add_argument('--probe-epochs', type=int, default=1,
+                        help='first N epochs train the new head only (backbone frozen); 1 = previous runs. '
+                             'Above 1 = LP-FT: the cosine schedule then starts when the backbone is unfrozen')
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--jitter', type=float, default=0.1,
                         help='brightness/contrast/saturation jitter strength')
@@ -723,18 +726,29 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss(weight=class_weight, label_smoothing=args.label_smoothing)
     steps_per_epoch = -(-len(fit_idx) // args.batch_size)
     total_steps = args.epochs * steps_per_epoch
+    if not 1 <= args.probe_epochs < args.epochs:
+        raise SystemExit(f'--probe-epochs must be at least 1 and below --epochs ({args.epochs})')
     scheduler = None
-    if args.schedule == 'cosine':
+    if args.schedule == 'cosine' and args.probe_epochs == 1:
         # Smoothly lower both learning rates to 1% of their start by the last step.
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer, lambda step: 0.01 + 0.99 * 0.5 * (1 + np.cos(np.pi * min(step, total_steps) / total_steps)))
+    elif args.schedule == 'cosine':
+        # LP-FT: full learning rate while only the head learns, then the same cosine
+        # as above over the fine-tuning steps alone, so fine-tuning matches a normal run.
+        probe_steps = args.probe_epochs * steps_per_epoch
+        tune_steps = total_steps - probe_steps
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda step: 1.0 if step < probe_steps else
+            0.01 + 0.99 * 0.5 * (1 + np.cos(np.pi * min(step - probe_steps, tune_steps) / tune_steps)))
     scaler = torch.amp.GradScaler('cuda')
     label_tensor = torch.from_numpy(labels)
     shuffle_generator = torch.Generator().manual_seed(args.seed)
 
     print(f'[3/4] Train {args.model} (ImageNet-pretrained) for {args.epochs} epochs at {args.width}x{args.height} px')
     print(f'      settings: split={args.split}  aug={args.aug}  schedule={args.schedule}  '
-          f'label_smoothing={args.label_smoothing}  class_weight={args.class_weight}')
+          f'label_smoothing={args.label_smoothing}  class_weight={args.class_weight}  '
+          f'head-only epochs={args.probe_epochs}')
     print('      one epoch = the model sees every training image once; after each epoch it is graded')
     print('      loss = training error (lower is better); macro F1 = grade on validation, 0 to 1 (higher is better)',
           flush=True)
@@ -771,11 +785,13 @@ def main() -> None:
               flush=True)
     for epoch in range(first_epoch, args.epochs):
         epoch_start = time.perf_counter()
-        # Epoch 1 trains the new head only, with frozen BatchNorm statistics (as in the baseline).
+        # The first --probe-epochs epochs train the new head only, with frozen BatchNorm
+        # statistics (1 epoch, as in the baseline, unless --probe-epochs says more).
+        probing = epoch < args.probe_epochs
         for name, parameter in model.named_parameters():
-            parameter.requires_grad = epoch > 0 or name.startswith(head_prefix)
+            parameter.requires_grad = not probing or name.startswith(head_prefix)
         model.train()
-        if epoch == 0:
+        if probing:
             for module in model.modules():
                 if isinstance(module, nn.BatchNorm2d):
                     module.eval()
