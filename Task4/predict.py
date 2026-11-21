@@ -48,6 +48,18 @@ TTA_VIEWS: list[tuple[str, float, float, float]] = [
     ('brighter 1.2', 0.0, 1.0, 1.2),
 ]
 NO_TTA = TTA_VIEWS[:1]
+# Optional extra view (--auto-view), idea from PR #21: per-image autocontrast for dark,
+# low-contrast frames. Rotation/zoom/brightness fields are unused for it.
+AUTO_VIEW: tuple[str, float, float, float] = ('autocontrast', 0.0, 1.0, 1.0)
+
+
+def autocontrast(batch: torch.Tensor) -> torch.Tensor:
+    """Per image: stretch its own 1st..99th brightness percentile to [0, 1], gain at most 4.
+    Uses only the pixels of that one image (no statistic of other images)."""
+    gray = (0.299 * batch[:, 0] + 0.587 * batch[:, 1] + 0.114 * batch[:, 2]).flatten(1).float()
+    low = torch.quantile(gray, 0.01, dim=1).view(-1, 1, 1, 1)
+    high = torch.quantile(gray, 0.99, dim=1).view(-1, 1, 1, 1)
+    return ((batch - low) / (high - low).clamp(min=0.25)).clamp(0, 1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +71,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=64, help='images per GPU batch (lower it if out of memory)')
     parser.add_argument('--tta', action='store_true',
                         help=f'average {len(TTA_VIEWS)} fixed views per image (see TTA_VIEWS); {len(TTA_VIEWS)}x slower')
+    parser.add_argument('--auto-view', action='store_true',
+                        help='also average a per-image autocontrast view (off by default)')
     parser.add_argument('--pack', type=Path,
                         help='instead of predicting: copy the best.pt of each run in --members-file into this folder')
     parser.add_argument('--members-file', type=Path, help='text file with one run name per line (for --pack)')
@@ -129,9 +143,9 @@ def probabilities_of_batches(model: nn.Module, settings: dict, batches, device: 
             resized = F.interpolate(batch_u8.to(device).float().div_(255), size=preprocess.size,
                                     mode='bilinear', align_corners=False)
             total = None
-            for _, turn, zoom, brightness in views:
-                inputs = ((apply_view(resized, turn, zoom, brightness) - preprocess.mean) / preprocess.std
-                          ).contiguous(memory_format=torch.channels_last)
+            for name, turn, zoom, brightness in views:
+                viewed = autocontrast(resized) if name == AUTO_VIEW[0] else apply_view(resized, turn, zoom, brightness)
+                inputs = ((viewed - preprocess.mean) / preprocess.std).contiguous(memory_format=torch.channels_last)
                 with torch.autocast(device_type=device.type, enabled=use_amp):
                     probabilities = F.softmax(model(inputs).float(), dim=1)
                 total = probabilities if total is None else total + probabilities
@@ -169,7 +183,7 @@ def main() -> None:
         raise SystemExit(f'no .pt files in {args.models}')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     image_paths = list_images(args.images)
-    views = TTA_VIEWS if args.tta else NO_TTA
+    views = (TTA_VIEWS if args.tta else NO_TTA) + ([AUTO_VIEW] if args.auto_view else [])
     print(f'{len(image_paths):,} images, {len(checkpoints)} models, {len(views)} view(s) per image, '
           f'device {device}', flush=True)
     probability_sum = np.zeros((len(image_paths), NUM_CLASSES))
