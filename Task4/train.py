@@ -39,6 +39,17 @@ from torchvision import models
 
 TASK_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TASK_DIR.parent
+
+
+def default_data_dir() -> Path:
+    """Folder with train/, test/, train.csv, test.csv: Task4/ if the images were copied there,
+    else the competition folder next to the repository (same default as pis/)."""
+    if (TASK_DIR / 'train.csv').is_file():
+        return TASK_DIR
+    return REPO_ROOT.parent / 'cpe342-kaggle-main' / '04_image_classification'
+
+
+DATA_DIR = default_data_dir()  # replaced by --data-root in main()
 EXP_ROOT = REPO_ROOT / 'outputs' / 'task4_exp'  # outputs/ is git-ignored
 NUM_CLASSES = 5
 CLASS_NAMES = ['7-11 Knights', 'FiveN', 'Free Fried', 'PUBE', 'Roblock']  # from datacard.txt
@@ -49,14 +60,21 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Task 4 experiments')
-    parser.add_argument('--mode', choices=['train', 'leak-check', 'predict', 'ensemble'], default='train',
+    parser.add_argument('--mode', choices=['train', 'leak-check', 'predict', 'ensemble', 'tta'], default='train',
                         help='train = train and grade a model; leak-check = look for near-duplicate '
                              'training images that fall on both sides of the split (round 1); '
                              'predict = label the test images with best.pt of --run-name; '
-                             'ensemble = average the runs in --members and save the result as --run-name')
+                             'ensemble = average the runs in --members and save the result as --run-name; '
+                             'tta = logits of best.pt on its validation images and on test under every TTA view')
+    parser.add_argument('--tta-views', default='',
+                        help='comma list of views for --mode tta (default TTA_VIEWS); views already '
+                             'saved for the same checkpoint are kept and only the new ones are computed')
     parser.add_argument('--members', default='',
                         help='comma-separated finished runs for --mode ensemble')
     parser.add_argument('--run-name', default='r0_baseline')
+    parser.add_argument('--data-root', default='',
+                        help='folder with train/, test/, train.csv, test.csv '
+                             '(default: Task4/ if it holds train.csv, else ../cpe342-kaggle-main/04_image_classification)')
     parser.add_argument('--seed', type=int, default=342)
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--batch-size', type=int, default=128)
@@ -77,9 +95,11 @@ def parse_args() -> argparse.Namespace:
                         help='hash = group byte-identical files (round 0); near-copy = also keep '
                              'near-copies of the same frame on one side (round 1 follow-up); '
                              'scene = hold out whole groups of look-alike screens (harder exam, round 5)')
-    parser.add_argument('--aug', choices=['basic', 'strong', 'extreme'], default='basic',
+    parser.add_argument('--aug', choices=['basic', 'strong', 'extreme', 'robust'], default='basic',
                         help='basic = colour jitter only; strong = rotation, hue, dark/bright, noise, blur; '
-                             'extreme = strong, with half of the images damaged over much wider ranges')
+                             'extreme = strong, with half of the images damaged over much wider ranges; '
+                             'robust = strong plus generic damage not tied to these images: crop/shift/stretch, '
+                             'low resolution, JPEG compression, grey, a covered patch (task4-boost)')
     parser.add_argument('--schedule', choices=['constant', 'cosine'], default='constant',
                         help='cosine = lower the learning rate smoothly towards the end')
     parser.add_argument('--label-smoothing', type=float, default=0.0)
@@ -97,6 +117,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--resume', action='store_true',
                         help='continue a stopped run from its last finished epoch (needs last.pt in the run '
                              'folder and the same settings); starts from epoch 1 if last.pt is missing')
+    # task4-boost options. Defaults reproduce the runs above.
+    parser.add_argument('--mix', choices=['none', 'cutmix', 'mixup', 'both'], default='none',
+                        help='blend pairs of training images and their labels (CutMix pastes a patch, '
+                             'Mixup overlays whole images); both = pick one at random per batch')
+    parser.add_argument('--mix-prob', type=float, default=0.5, help='share of batches that are blended')
+    parser.add_argument('--multi-scale', action='store_true',
+                        help='each batch at a random size from 0.75x to 1.25x of --height/--width '
+                             '(validation stays at --height x --width)')
     # Machine options: change how much of the PC the run uses, never the result.
     parser.add_argument('--cpu-threads', type=int, default=0,
                         help='limit PyTorch to this many CPU threads (0 = PyTorch default, all cores)')
@@ -114,7 +142,10 @@ def save_checkpoint(path: Path, state: dict) -> None:
 
 # Backbones that fit the 6 GB laptop GPU at 128x256, batch 128 (measured 2026-11-15).
 # Left out: efficientnet_v2_s and swin_t (over 6 GB, 30-45 min per epoch), efficientnet_b2 (10 min per epoch).
-CANDIDATE_MODELS = ['resnet18', 'resnet34', 'resnet50', 'efficientnet_b0', 'regnet_y_1_6gf', 'convnext_tiny']
+# task4-boost (8 GB RTX 4070) adds larger torchvision backbones; all still ImageNet-1k weights only.
+CANDIDATE_MODELS = ['resnet18', 'resnet34', 'resnet50', 'efficientnet_b0', 'regnet_y_1_6gf', 'convnext_tiny',
+                    'convnext_small', 'convnext_base', 'efficientnet_v2_s', 'efficientnet_v2_m', 'efficientnet_b3',
+                    'swin_t', 'swin_s', 'swin_v2_t', 'regnet_y_3_2gf', 'regnet_y_8gf']
 
 
 def build_model(model_name: str) -> tuple[nn.Module, str]:
@@ -173,9 +204,9 @@ def load_train_images(train_frame: pd.DataFrame) -> tuple[torch.Tensor, list[str
     pixels: np.ndarray | None = None
     sha256: list[str] = []
     for index, file_name in enumerate(file_names):
-        raw = (TASK_DIR / 'train' / file_name).read_bytes()
+        raw = (DATA_DIR / 'train' / file_name).read_bytes()
         sha256.append(hashlib.sha256(raw).hexdigest())
-        with Image.open(TASK_DIR / 'train' / file_name) as image:
+        with Image.open(DATA_DIR / 'train' / file_name) as image:
             array = np.asarray(image.convert('RGB'))
         if pixels is None:
             pixels = np.empty((len(file_names), *array.shape), dtype=np.uint8)
@@ -208,7 +239,7 @@ def color_jitter(batch: torch.Tensor, strength: float) -> torch.Tensor:
 RGB_TO_YIQ = torch.tensor([[0.299, 0.587, 0.114], [0.596, -0.274, -0.322], [0.211, -0.523, 0.312]])
 
 
-def strong_augment(batch: torch.Tensor, extreme_share: float = 0.0) -> torch.Tensor:
+def strong_augment(batch: torch.Tensor, extreme_share: float = 0.0, geometry: bool = True) -> torch.Tensor:
     """Damage training images the way the provided training images are already damaged.
 
     Training screenshots show heavy rotation with black corners, whole-image colour
@@ -266,6 +297,8 @@ def strong_augment(batch: torch.Tensor, extreme_share: float = 0.0) -> torch.Ten
             kernel = (kernel / kernel.sum()).expand(3, 1, 15, 15)
             batch[heavy] = F.conv2d(F.pad(batch[heavy], (7, 7, 7, 7), mode='replicate'), kernel, groups=3)
     batch = (batch + torch.randn_like(batch) * uniform(0.0, 0.10, 0.0, 0.30)).clamp(0, 1)   # grain noise
+    if not geometry:
+        return batch
     # Rotation (+-30 degrees) and zoom on about 70% of images; outside area becomes black.
     height, width = batch.shape[2], batch.shape[3]
     turn = torch.empty(size, device=device).uniform_(-np.pi / 6, np.pi / 6)
@@ -284,6 +317,74 @@ def strong_augment(batch: torch.Tensor, extreme_share: float = 0.0) -> torch.Ten
     return F.grid_sample(batch, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
 
 
+def low_resolution(batch: torch.Tensor, share: float) -> torch.Tensor:
+    """Shrink a share of the images to 30-90% of their size and blow them back up (soft, blocky detail)."""
+    size, height, width = batch.shape[0], batch.shape[2], batch.shape[3]
+    picked = torch.nonzero(torch.rand(size, device=batch.device) < share).flatten()
+    for index in picked.tolist():
+        factor = float(np.random.uniform(0.3, 0.9))
+        small = F.interpolate(batch[index:index + 1], size=(max(8, int(height * factor)), max(8, int(width * factor))),
+                              mode='area')
+        if np.random.rand() < 0.3:
+            batch[index:index + 1] = F.interpolate(small, size=(height, width), mode='nearest')
+        else:
+            batch[index:index + 1] = F.interpolate(small, size=(height, width), mode='bilinear', align_corners=False)
+    return batch
+
+
+def jpeg_compress(batch: torch.Tensor, share: float) -> torch.Tensor:
+    """Save a share of the images as JPEG at quality 15-90 and decode them again (block artefacts)."""
+    from torchvision.io import decode_jpeg, encode_jpeg
+    picked = torch.nonzero(torch.rand(batch.shape[0], device=batch.device) < share).flatten()
+    if len(picked) == 0:
+        return batch
+    as_bytes = (batch[picked] * 255).round().clamp(0, 255).to(torch.uint8)
+    quality = int(np.random.randint(15, 91))  # one quality per batch keeps it to one encode call
+    encoded = [e.cpu() for e in encode_jpeg(list(as_bytes), quality=quality)]
+    decoded = decode_jpeg(encoded, device=batch.device)
+    batch[picked] = torch.stack(decoded).float().div(255)
+    return batch
+
+
+def robust_augment(batch: torch.Tensor) -> torch.Tensor:
+    """--aug robust: generic damage on top of strong_augment's colour/blur/noise.
+
+    Not modelled on any image set: crops, shifts and stretches of the frame, low resolution,
+    JPEG compression, grey frames and a covered patch are common ways screenshots of the same
+    game can differ (other capture tools, window sizes, overlays).
+    """
+    size, device = batch.shape[0], batch.device
+    batch = strong_augment(batch, extreme_share=0.0, geometry=False)
+    batch = low_resolution(batch, share=0.3)
+    batch = jpeg_compress(batch, share=0.4)
+    gray = torch.rand(size, 1, 1, 1, device=device) < 0.05
+    batch = torch.where(gray, (0.299 * batch[:, 0:1] + 0.587 * batch[:, 1:2] + 0.114 * batch[:, 2:3]).expand_as(batch),
+                        batch)
+    # Geometry: rotation as in strong, plus separate x/y zoom (crop in or shrink with black border) and shift.
+    height, width = batch.shape[2], batch.shape[3]
+    turn = torch.empty(size, device=device).uniform_(-np.pi / 6, np.pi / 6)
+    turn = torch.where(torch.rand(size, device=device) < 0.7, turn, torch.zeros_like(turn))
+    zoom_x = torch.empty(size, device=device).uniform_(0.8, 1.6)
+    zoom_y = zoom_x * torch.empty(size, device=device).uniform_(0.8, 1.25)
+    shift = torch.empty(size, 2, device=device).uniform_(-0.2, 0.2)
+    shift = torch.where(torch.rand(size, 1, device=device) < 0.6, shift, torch.zeros_like(shift))
+    theta = torch.zeros(size, 2, 3, device=device)
+    theta[:, 0, 0] = torch.cos(turn) / zoom_x
+    theta[:, 0, 1] = -torch.sin(turn) * height / width / zoom_x
+    theta[:, 1, 0] = torch.sin(turn) * width / height / zoom_y
+    theta[:, 1, 1] = torch.cos(turn) / zoom_y
+    theta[:, :, 2] = shift
+    grid = F.affine_grid(theta, list(batch.shape), align_corners=False)
+    batch = F.grid_sample(batch, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+    # Covered patch (cutout) on 30% of images, filled with a random grey.
+    covered = torch.nonzero(torch.rand(size, device=device) < 0.3).flatten().tolist()
+    for index in covered:
+        ph, pw = int(height * np.random.uniform(0.1, 0.35)), int(width * np.random.uniform(0.1, 0.35))
+        top, left = np.random.randint(0, height - ph + 1), np.random.randint(0, width - pw + 1)
+        batch[index, :, top:top + ph, left:left + pw] = float(np.random.rand())
+    return batch
+
+
 class Preprocess:
     """uint8 CPU batch -> resized, (optionally augmented), normalized float GPU batch."""
 
@@ -292,11 +393,19 @@ class Preprocess:
         self.mean = torch.tensor(IMAGENET_MEAN, device=device).view(1, 3, 1, 1)
         self.std = torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1)
 
-    def __call__(self, batch_u8: torch.Tensor, train: bool) -> torch.Tensor:
+    def __call__(self, batch_u8: torch.Tensor, train: bool, view: str = 'id',
+                 size: tuple[int, int] | None = None) -> torch.Tensor:
         batch = batch_u8.to(self.device, non_blocking=True).float().div_(255)
-        batch = F.interpolate(batch, size=self.size, mode='bilinear', align_corners=False)
+        if view.startswith('size'):  # TTA: whole image at another input size (model sees more/less detail)
+            factor = float(view[4:])
+            size = (int(round(self.size[0] * factor / 16)) * 16, int(round(self.size[1] * factor / 16)) * 16)
+        batch = F.interpolate(batch, size=size or self.size, mode='bilinear', align_corners=False)
+        if view != 'id' and not view.startswith('size'):
+            batch = apply_view(batch, view)
         if train:
-            if self.aug == 'extreme':
+            if self.aug == 'robust':
+                batch = robust_augment(batch)
+            elif self.aug == 'extreme':
                 batch = strong_augment(batch, extreme_share=0.5)
             elif self.aug == 'strong':
                 batch = strong_augment(batch)
@@ -306,16 +415,77 @@ class Preprocess:
         return batch.contiguous(memory_format=torch.channels_last)
 
 
+def mix_batch(inputs: torch.Tensor, kind: str, alpha: float = 1.0) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """CutMix or Mixup inside one piece: returns blended inputs, partner order and the share of the own label."""
+    order = torch.randperm(inputs.shape[0], device=inputs.device)
+    lam = float(np.random.beta(alpha, alpha))
+    if kind == 'mixup':
+        return inputs * lam + inputs[order] * (1 - lam), order, lam
+    height, width = inputs.shape[2], inputs.shape[3]
+    cut_h, cut_w = int(height * np.sqrt(1 - lam)), int(width * np.sqrt(1 - lam))
+    cy, cx = np.random.randint(height), np.random.randint(width)
+    top, bottom = max(cy - cut_h // 2, 0), min(cy + cut_h // 2, height)
+    left, right = max(cx - cut_w // 2, 0), min(cx + cut_w // 2, width)
+    mixed = inputs.clone()
+    mixed[:, :, top:bottom, left:right] = inputs[order, :, top:bottom, left:right]
+    lam = 1 - (bottom - top) * (right - left) / (height * width)
+    return mixed, order, lam
+
+
 def predict_logits(model: nn.Module, images: torch.Tensor, indices: np.ndarray,
-                   preprocess: Preprocess, batch_size: int) -> np.ndarray:
+                   preprocess: Preprocess, batch_size: int, view: str = 'id') -> np.ndarray:
     model.eval()
     outputs: list[torch.Tensor] = []
     with torch.inference_mode():
         for start in range(0, len(indices), batch_size * 2):
             chunk = torch.from_numpy(indices[start:start + batch_size * 2])
             with torch.autocast(device_type='cuda'):
-                outputs.append(model(preprocess(images[chunk], train=False)).float().cpu())
+                outputs.append(model(preprocess(images[chunk], train=False, view=view)).float().cpu())
     return torch.cat(outputs).numpy()
+
+
+# Test-time augmentation (TA ruling 15 Nov: allowed). Each view is a fixed, label-preserving
+# change of the image; the softmax over several views is averaged. Which views to average
+# is chosen on out-of-fold training predictions only (Task4/oof.py).
+KNOWN_VIEWS = ['id', 'hflip', 'rot+8', 'rot-8', 'rot+16', 'rot-16', 'zoom1.12', 'zoom0.9',
+               'size0.875', 'size1.125', 'size1.25', 'auto']
+# Views computed by --mode tta. Chosen on scene fold 0 (training images only): +-8 degree turns and
+# zoom in/out helped every model tried; flip hurt (screen text is mirrored) and size views were mixed.
+TTA_VIEWS = ['id', 'rot+8', 'rot-8', 'zoom1.12', 'zoom0.9']
+
+
+def affine(batch: torch.Tensor, turn: float, zoom: float) -> torch.Tensor:
+    """Rotate by turn radians and zoom (>1 = closer); outside area black, as in strong_augment."""
+    size, height, width = batch.shape[0], batch.shape[2], batch.shape[3]
+    cos, sin = float(np.cos(turn)), float(np.sin(turn))
+    theta = torch.tensor([[cos / zoom, -sin * height / width / zoom, 0.0],
+                          [sin * width / height / zoom, cos / zoom, 0.0]], device=batch.device, dtype=batch.dtype)
+    grid = F.affine_grid(theta.expand(size, 2, 3), list(batch.shape), align_corners=False)
+    return F.grid_sample(batch, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+
+
+def autocontrast(batch: torch.Tensor) -> torch.Tensor:
+    """Per image: stretch its own 1st..99th brightness percentile to the full range, gain at most 4.
+
+    Uses only the pixels of that one image. Aimed at dark and low-contrast frames, which hold most
+    of the out-of-fold mistakes (training images only); well-exposed frames barely change.
+    """
+    gray = (0.299 * batch[:, 0] + 0.587 * batch[:, 1] + 0.114 * batch[:, 2]).flatten(1).float()
+    low = torch.quantile(gray, 0.01, dim=1).view(-1, 1, 1, 1)
+    high = torch.quantile(gray, 0.99, dim=1).view(-1, 1, 1, 1)
+    return ((batch - low) / (high - low).clamp(min=0.25)).clamp(0, 1)
+
+
+def apply_view(batch: torch.Tensor, view: str) -> torch.Tensor:
+    if view == 'auto':
+        return autocontrast(batch)
+    if view == 'hflip':
+        return batch.flip(3)
+    if view.startswith('rot'):
+        return affine(batch, float(view[3:]) * np.pi / 180, 1.0)
+    if view.startswith('zoom'):
+        return affine(batch, 0.0, float(view[4:]))
+    raise ValueError(f'unknown TTA view {view}')
 
 
 def save_confusion_plot(matrix: np.ndarray, path: Path) -> None:
@@ -445,7 +615,7 @@ NEAR_COPY_MIN_CONTRAST = 0.08  # near-black / washed-out frames look alike witho
 NEAR_COPY_MAX_GROUP = 5  # larger clusters were chains of unrelated dark or noisy frames
 SCENES_PER_GAME = 20  # look-alike groups per game for --split scene
 # Options that never change how a model is trained; --resume ignores them when comparing settings.
-NOT_TRAINING_SETTINGS = ('resume', 'cpu_threads', 'low_priority', 'members')
+NOT_TRAINING_SETTINGS = ('resume', 'cpu_threads', 'low_priority', 'members', 'data_root', 'tta_views')
 
 
 def near_copy_groups(images: torch.Tensor, labels: np.ndarray, sha256: list[str], preprocess: Preprocess,
@@ -536,6 +706,89 @@ def scene_groups(images: torch.Tensor, labels: np.ndarray, preprocess: Preproces
     return groups, {'scene_groups': len(set(groups))}
 
 
+def load_test_images(test_frame: pd.DataFrame) -> torch.Tensor:
+    """All test images as one uint8 tensor (N, 3, H, W), cached like the training images.
+
+    Only used to label test images; nothing computed from them feeds back into training.
+    """
+    cache_dir = EXP_ROOT / 'cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    pixel_cache, name_cache = cache_dir / 'test_u8.npy', cache_dir / 'test_files.json'
+    file_names = test_frame['file_name'].tolist()
+    if pixel_cache.is_file() and name_cache.is_file():
+        if json.loads(name_cache.read_text(encoding='utf-8')) == file_names:
+            return torch.from_numpy(np.load(pixel_cache))
+    arrays = [np.asarray(Image.open(DATA_DIR / 'test' / name).convert('RGB')) for name in file_names]
+    pixels = np.ascontiguousarray(np.stack(arrays).transpose(0, 3, 1, 2))
+    np.save(pixel_cache, pixels)
+    name_cache.write_text(json.dumps(file_names), encoding='utf-8')
+    return torch.from_numpy(pixels)
+
+
+def load_run_model(run_dir: Path, device: torch.device, which: str = 'best') -> tuple[nn.Module, dict, int]:
+    checkpoint_path = run_dir / f'{which}.pt'
+    if not checkpoint_path.is_file():
+        raise SystemExit(f'{checkpoint_path} not found: train this run first')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    settings = checkpoint['args']
+    model, _ = build_model(settings['model'])
+    model.load_state_dict(checkpoint['state_dict'])
+    model.to(device, memory_format=torch.channels_last)
+    model.eval()
+    return model, settings, int(checkpoint['epoch'])
+
+
+def tta_logits(run_dir: Path, device: torch.device, views: list[str] | None = None) -> None:
+    """Logits under each view (default TTA_VIEWS) on the run's validation images and on test.
+
+    Uses final.pt (last epoch, not chosen on validation) when it exists, else best.pt.
+    Saves val_logits_tta.npy / test_logits_tta.npy, shape (views, images, 5), and tta_views.json.
+    Views already saved for the same checkpoint are kept; only missing views are computed and appended.
+    Picking the views to average is done later on validation (out-of-fold) predictions only.
+    """
+    views = views or TTA_VIEWS
+    unknown = [v for v in views if v not in KNOWN_VIEWS]
+    if unknown:
+        raise SystemExit(f'unknown TTA views {unknown}; known: {KNOWN_VIEWS}')
+    which = 'final' if (run_dir / 'final.pt').is_file() else 'best'
+    done_views, old_val, old_test = [], None, None
+    info_file = run_dir / 'tta_views.json'
+    if (run_dir / 'val_logits_tta.npy').is_file() and info_file.is_file():
+        info = json.loads(info_file.read_text(encoding='utf-8'))
+        if isinstance(info, dict) and info.get('checkpoint') == which:
+            done_views = info['views']
+            old_val, old_test = np.load(run_dir / 'val_logits_tta.npy'), np.load(run_dir / 'test_logits_tta.npy')
+    todo = [v for v in views if v not in done_views]
+    if not todo:
+        print(f'{run_dir.name}: views {views} already saved')
+        return
+    model, settings, epoch = load_run_model(run_dir, device, which)
+    preprocess = Preprocess(device, settings['height'], settings['width'], 0.0, settings.get('aug', 'basic'))
+    piece = settings.get('micro_batch') or settings['batch_size']
+    train_frame = pd.read_csv(DATA_DIR / 'train.csv')
+    images, _ = load_train_images(train_frame)
+    labels = train_frame['label'].to_numpy(dtype=int)
+    val_idx = np.load(run_dir / 'val_idx.npy')
+    test_images = load_test_images(pd.read_csv(DATA_DIR / 'test.csv'))
+    test_idx = np.arange(len(test_images))
+    print(f'=== Task 4 TTA logits for "{run_dir.name}" ({settings["model"]}, {which}.pt = epoch {epoch}) ===',
+          flush=True)
+    val_views, test_views = [], []
+    for view in todo:
+        start = time.perf_counter()
+        val_views.append(predict_logits(model, images, val_idx, preprocess, piece, view))
+        test_views.append(predict_logits(model, test_images, test_idx, preprocess, piece, view))
+        print(f'      {view:9s} validation macro F1 {macro_f1(labels[val_idx], val_views[-1].argmax(1)):.4f}'
+              f'  ({time.perf_counter() - start:.0f}s)', flush=True)
+    new_val, new_test = np.stack(val_views).astype(np.float32), np.stack(test_views).astype(np.float32)
+    if old_val is not None:
+        new_val, new_test = np.concatenate([old_val, new_val]), np.concatenate([old_test, new_test])
+    np.save(run_dir / 'val_logits_tta.npy', new_val)
+    np.save(run_dir / 'test_logits_tta.npy', new_test)
+    info_file.write_text(json.dumps({'views': done_views + todo, 'checkpoint': which, 'epoch': epoch}),
+                         encoding='utf-8')
+
+
 def predict_test(run_dir: Path, device: torch.device) -> None:
     """Label every test image with best.pt of a finished run.
 
@@ -553,7 +806,7 @@ def predict_test(run_dir: Path, device: torch.device) -> None:
     model.to(device, memory_format=torch.channels_last)
     print(f'=== Task 4 predict with "{run_dir.name}" ({settings["model"]}, epoch {checkpoint["epoch"]}, '
           f'{settings["width"]}x{settings["height"]}) ===', flush=True)
-    test = pd.read_csv(TASK_DIR / 'test.csv')
+    test = pd.read_csv(DATA_DIR / 'test.csv')
     preprocess = Preprocess(device, settings['height'], settings['width'], 0.0, settings.get('aug', 'basic'))
     piece = settings.get('micro_batch') or settings['batch_size']
     model.eval()
@@ -562,7 +815,7 @@ def predict_test(run_dir: Path, device: torch.device) -> None:
     with torch.inference_mode():
         for begin in range(0, len(test), piece):
             names = test['file_name'].iloc[begin:begin + piece]
-            arrays = [np.asarray(Image.open(TASK_DIR / 'test' / name).convert('RGB')) for name in names]
+            arrays = [np.asarray(Image.open(DATA_DIR / 'test' / name).convert('RGB')) for name in names]
             batch = torch.from_numpy(np.ascontiguousarray(np.stack(arrays).transpose(0, 3, 1, 2)))
             with torch.autocast(device_type='cuda'):
                 outputs.append(model(preprocess(batch, train=False)).float().cpu().numpy())
@@ -584,7 +837,7 @@ def ensemble_test(run_dir: Path, members: list[str], device: torch.device) -> No
     if len(members) < 2:
         raise SystemExit('--members needs at least two run names, e.g. --members r3d_lr2e-4,r3d_lr3e-4')
     member_dirs = [EXP_ROOT / name for name in members]
-    labels_all = pd.read_csv(TASK_DIR / 'train.csv')['label'].to_numpy(dtype=int)
+    labels_all = pd.read_csv(DATA_DIR / 'train.csv')['label'].to_numpy(dtype=int)
     val_sets = [np.load(member_dir / 'val_idx.npy') for member_dir in member_dirs]
     same_split = all(np.array_equal(val_set, val_sets[0]) for val_set in val_sets)
     val_probs, test_probs = [], []
@@ -615,7 +868,7 @@ def ensemble_test(run_dir: Path, members: list[str], device: torch.device) -> No
     test_mean = np.mean(test_probs, axis=0)
     np.save(run_dir / 'test_probs.npy', test_mean)
     (run_dir / 'members.txt').write_text('\n'.join(members) + '\n', encoding='utf-8')
-    write_test_outputs(run_dir, pd.read_csv(TASK_DIR / 'test.csv'), test_mean.argmax(1))
+    write_test_outputs(run_dir, pd.read_csv(DATA_DIR / 'test.csv'), test_mean.argmax(1))
 
 
 def macro_f1(truth: np.ndarray, predicted: np.ndarray) -> float:
@@ -649,7 +902,12 @@ def write_test_outputs(run_dir: Path, test: pd.DataFrame, predicted: np.ndarray)
 
 
 def main() -> None:
+    global DATA_DIR
     args = parse_args()
+    if args.data_root:
+        DATA_DIR = Path(args.data_root).resolve()
+    if not (DATA_DIR / 'train.csv').is_file():
+        raise SystemExit(f'{DATA_DIR} has no train.csv: pass --data-root <folder with train/, test/, train.csv>')
     if args.cpu_threads:
         torch.set_num_threads(args.cpu_threads)
     if args.low_priority:
@@ -669,6 +927,9 @@ def main() -> None:
     if args.mode == 'predict':
         predict_test(run_dir, device)
         return
+    if args.mode == 'tta':
+        tta_logits(run_dir, device, [v for v in args.tta_views.split(',') if v] or None)
+        return
     if args.mode == 'ensemble':
         print(f'=== Task 4 ensemble "{args.run_name}" ===', flush=True)
         ensemble_test(run_dir, [name.strip() for name in args.members.split(',') if name.strip()], device)
@@ -682,7 +943,7 @@ def main() -> None:
 
     print(f'=== Task 4 experiment "{args.run_name}" on {torch.cuda.get_device_name(0)} ===')
     print('[1/4] Load training images into RAM (test images are never opened)', flush=True)
-    train_frame = pd.read_csv(TASK_DIR / 'train.csv')
+    train_frame = pd.read_csv(DATA_DIR / 'train.csv')
     load_start = time.perf_counter()
     images, sha256 = load_train_images(train_frame)
     print(f'      {len(images):,} images of {images.shape[3]}x{images.shape[2]} px '
@@ -695,7 +956,14 @@ def main() -> None:
     preprocess = Preprocess(device, args.height, args.width, args.jitter, args.aug)
     # hash: same holdout as pis/image.py (byte-identical images stay on one side).
     groups, split_stats = list(sha256), {}
-    if args.split == 'near-copy':
+    # The near-copy and scene groups come from GPU features, which can differ in the last digits
+    # between runs; the groups are cached so every run of one split holds out exactly the same images.
+    groups_cache = EXP_ROOT / 'cache' / f'groups_{args.split}_seed{args.seed}_n{len(labels)}.json'
+    if args.split != 'hash' and groups_cache.is_file():
+        cached = json.loads(groups_cache.read_text(encoding='utf-8'))
+        groups, split_stats = cached['groups'], cached['stats']
+        print(f'      groups for split "{args.split}" read from {groups_cache.name}')
+    elif args.split == 'near-copy':
         groups, split_stats = near_copy_groups(images, labels, sha256, preprocess, args.batch_size)
         print(f'      near-copies kept together: {split_stats["near_copy_groups"]} groups, '
               f'{split_stats["images_in_near_copy_groups"]} images '
@@ -704,6 +972,8 @@ def main() -> None:
         groups, split_stats = scene_groups(images, labels, preprocess, args.batch_size, args.seed)
         print(f'      whole scenes kept together: {split_stats["scene_groups"]} look-alike groups '
               f'({SCENES_PER_GAME} per game)')
+    if args.split != 'hash' and not groups_cache.is_file():
+        groups_cache.write_text(json.dumps({'groups': groups, 'stats': split_stats}), encoding='utf-8')
     splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=args.seed)
     fit_idx, val_idx = list(splitter.split(np.zeros(len(labels)), labels, groups=groups))[args.fold]
     print(f'      fold {args.fold}: learn on {len(fit_idx):,} images, grade on {len(val_idx):,} images (validation)',
@@ -742,7 +1012,7 @@ def main() -> None:
             optimizer, lambda step: 1.0 if step < probe_steps else
             0.01 + 0.99 * 0.5 * (1 + np.cos(np.pi * min(step - probe_steps, tune_steps) / tune_steps)))
     scaler = torch.amp.GradScaler('cuda')
-    label_tensor = torch.from_numpy(labels)
+    label_tensor = torch.from_numpy(labels).long()  # int64 for the loss (numpy int is 32-bit on some Windows builds)
     shuffle_generator = torch.Generator().manual_seed(args.seed)
 
     print(f'[3/4] Train {args.model} (ImageNet-pretrained) for {args.epochs} epochs at {args.width}x{args.height} px')
@@ -803,12 +1073,25 @@ def main() -> None:
             # One weight update per batch; the batch may be fed in pieces to fit in GPU memory.
             # Each piece's mean loss is weighted by its share of the batch, so the summed
             # gradient equals the gradient of the whole batch's mean loss.
+            batch_size_now = None
+            if args.multi_scale:
+                scale = float(np.random.choice([0.75, 0.875, 1.0, 1.125, 1.25]))
+                batch_size_now = (int(round(args.height * scale / 16)) * 16, int(round(args.width * scale / 16)) * 16)
+            mix_kind = 'none'
+            if args.mix != 'none' and np.random.rand() < args.mix_prob:
+                mix_kind = args.mix if args.mix != 'both' else ('cutmix' if np.random.rand() < 0.5 else 'mixup')
             for piece_start in range(0, len(chunk), piece):
                 part = chunk[piece_start:piece_start + piece]
-                inputs = preprocess(images[part], train=True)
+                inputs = preprocess(images[part], train=True, size=batch_size_now)
                 targets = label_tensor[part].to(device, non_blocking=True)
-                with torch.autocast(device_type='cuda'):
-                    loss = criterion(model(inputs), targets)
+                if mix_kind != 'none':
+                    inputs, targets_b, lam = mix_batch(inputs, mix_kind)
+                    with torch.autocast(device_type='cuda'):
+                        output = model(inputs)
+                        loss = lam * criterion(output, targets) + (1 - lam) * criterion(output, targets[targets_b])
+                else:
+                    with torch.autocast(device_type='cuda'):
+                        loss = criterion(model(inputs), targets)
                 scaler.scale(loss * len(part) / len(chunk)).backward()
                 loss_sum += loss.item() * len(part)
             scaler.step(optimizer)
@@ -828,6 +1111,12 @@ def main() -> None:
             best_score, best_logits = score, logits
             torch.save({'state_dict': model.state_dict(), 'epoch': epoch + 1, 'args': vars(args)},
                        run_dir / 'best.pt')
+        if epoch + 1 == args.epochs:
+            # The last epoch is kept too: choosing it needs no look at the validation score,
+            # so its validation result is an honest estimate (best.pt is picked on validation).
+            torch.save({'state_dict': model.state_dict(), 'epoch': epoch + 1, 'args': vars(args)},
+                       run_dir / 'final.pt')
+            np.save(run_dir / 'val_logits_final.npy', logits)
         # Everything needed to continue from the next epoch after a stop (--resume).
         save_checkpoint(last_path, {
             'settings': run_settings, 'epoch': epoch + 1, 'model': model.state_dict(),
@@ -859,19 +1148,20 @@ def main() -> None:
     # One row per run so experiments can be compared in a single table.
     results_path = EXP_ROOT / 'results.csv'
     columns = ['run_name', 'model', 'split', 'fold', 'aug', 'schedule', 'label_smoothing', 'class_weight',
-               'lr_backbone', 'lr_head', 'height', 'width', 'epochs', 'limit', 'val_macro_f1', *[f'f1_class{c}' for c in range(NUM_CLASSES)],
+               'lr_backbone', 'lr_head', 'height', 'width', 'epochs', 'limit', 'mix', 'multi_scale', 'val_macro_f1', *[f'f1_class{c}' for c in range(NUM_CLASSES)],
                'train_minutes', 'peak_gpu_mb']
     row = {'run_name': args.run_name, 'model': args.model, 'split': args.split, 'fold': args.fold, 'aug': args.aug,
            'schedule': args.schedule, 'label_smoothing': args.label_smoothing, 'class_weight': args.class_weight,
            'lr_backbone': args.lr_backbone, 'lr_head': args.lr_head,
            'height': args.height, 'width': args.width, 'epochs': args.epochs, 'limit': args.limit,
+           'mix': args.mix, 'multi_scale': args.multi_scale,
            'val_macro_f1': round(best_score, 4),
            **{f'f1_class{c}': round(report[str(c)]['f1-score'], 4) for c in range(NUM_CLASSES)},
            'train_minutes': round(total_seconds / 60, 1), 'peak_gpu_mb': metrics['peak_gpu_memory_mb']}
     previous = pd.read_csv(results_path) if results_path.is_file() else pd.DataFrame(columns=columns)
     # Older rows (round 0) lack the newer setting columns; they used the defaults.
     defaults = {'split': 'hash', 'aug': 'basic', 'schedule': 'constant', 'label_smoothing': 0.0, 'class_weight': 'none',
-                'fold': 0, 'lr_backbone': 3e-5, 'lr_head': 3e-4}
+                'fold': 0, 'lr_backbone': 3e-5, 'lr_head': 3e-4, 'mix': 'none', 'multi_scale': False}
     previous = previous.assign(**{k: previous[k] if k in previous else v for k, v in defaults.items()})
     pd.concat([previous, pd.DataFrame([row])], ignore_index=True)[columns].to_csv(results_path, index=False)
     summary = human_summary(args.run_name, best_score, int(saved_epoch(history, best_score)), total_seconds,
