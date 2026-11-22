@@ -10,6 +10,10 @@ predictions only; test logits are only averaged and written out.
     python Task4/oof.py --group cnt=cnt_nc_f{fold} --group cns=cns_nc_f{fold} --views id,hflip
         --write-pred outputs/task4_exp/ens_a/task4_predictions.csv
 
+A group can use fewer folds than --folds with label=pattern@0,1 (e.g. a recipe only trained
+on folds 0 and 1). Its test probabilities then average those runs only, and in the OOF
+ensemble each training image is averaged over the groups that hold it out.
+
 Needs val_logits.npy / val_idx.npy of every run (written by training) and, for TTA,
 val_logits_tta.npy / test_logits_tta.npy (python Task4/train.py --mode tta --run-name <run>).
 """
@@ -91,7 +95,7 @@ class Group:
     """One recipe on all folds: OOF probabilities over the whole training set."""
 
     def __init__(self, label: str, pattern: str, folds: list[int], n_images: int) -> None:
-        self.label = label
+        self.label, self.folds = label, folds
         self.runs = [Run(pattern.format(fold=fold)) for fold in folds]
         self.n_images = n_images
 
@@ -111,6 +115,27 @@ class Group:
         return np.mean([run.test_probs(views) for run in self.runs], axis=0)
 
 
+def parse_group(spec: str, default_folds: list[int]) -> tuple[str, str, list[int]]:
+    """'label=pattern' or 'label=pattern@0,1' -> (label, pattern, folds)."""
+    label, _, rest = spec.partition('=')
+    pattern, _, fold_list = rest.partition('@')
+    if not label or '{fold}' not in pattern:
+        raise SystemExit(f'--group {spec!r}: expected label=run-pattern-with-{{fold}}[@folds]')
+    folds = [int(f) for f in fold_list.split(',')] if fold_list else list(default_folds)
+    return label, pattern, folds
+
+
+def blend(probs: list[np.ndarray], weights: list[float]) -> np.ndarray:
+    """Weighted mean per image over the groups that cover it (rows a group lacks are NaN)."""
+    total = np.zeros_like(probs[0], dtype=np.float64)
+    weight = np.zeros((len(probs[0]), 1))
+    for w, p in zip(weights, probs):
+        covered = ~np.isnan(p[:, :1])
+        total += np.where(covered, w * p, 0.0)
+        weight += w * covered
+    return (total / np.maximum(weight, 1e-12)).astype(np.float32)
+
+
 def fold_scores(labels: np.ndarray, probs: np.ndarray, fold_sets: list[np.ndarray]) -> list[float]:
     return [macro_f1(labels[idx], probs[idx].argmax(1)) for idx in fold_sets]
 
@@ -126,7 +151,8 @@ def score_line(name: str, labels: np.ndarray, probs: np.ndarray, fold_sets: list
 def main() -> None:
     parser = argparse.ArgumentParser(description='Task 4 out-of-fold scores, TTA and ensembles')
     parser.add_argument('--group', action='append', default=[],
-                        help='label=run-name pattern with {fold}, e.g. cnt=cnt_nc_f{fold} (repeatable)')
+                        help='label=run-name pattern with {fold}, e.g. cnt=cnt_nc_f{fold} (repeatable); '
+                             'add @0,1 to use only those folds for this group')
     parser.add_argument('--folds', default='0,1,2,3,4')
     parser.add_argument('--views', default='none',
                         help=f'TTA views to average: a preset ({", ".join(PRESET_VIEW_SETS)}) or a comma list')
@@ -142,28 +168,30 @@ def main() -> None:
         t4.DATA_DIR = Path(args.data_root).resolve()
     labels = pd.read_csv(t4.DATA_DIR / 'train.csv')['label'].to_numpy(dtype=int)
     folds = [int(f) for f in args.folds.split(',')]
-    groups = []
-    for spec in args.group:
-        label, _, pattern = spec.partition('=')
-        groups.append(Group(label, pattern, folds, len(labels)))
+    groups = [Group(*parse_group(spec, folds), len(labels)) for spec in args.group]
     if not groups:
         raise SystemExit('give at least one --group label=pattern')
-    fold_sets = [run.val_idx for run in groups[0].runs]
-    for group in groups[1:]:
-        for a, b in zip(fold_sets, group.runs):
-            if not np.array_equal(np.sort(a), np.sort(b.val_idx)):
-                raise SystemExit(f'{group.label}: {b.name} holds out other images than {groups[0].label}; '
-                                 'groups must share the same folds')
+    # Every run of a given fold number must hold out the same images, whatever its group.
+    fold_idx: dict[int, np.ndarray] = {}
+    for group in groups:
+        for fold, run in zip(group.folds, group.runs):
+            reference = fold_idx.setdefault(fold, run.val_idx)
+            if not np.array_equal(np.sort(reference), np.sort(run.val_idx)):
+                raise SystemExit(f'{group.label}: {run.name} holds out other images than fold {fold} of '
+                                 'another group; groups must share the same folds')
+    fold_sets = [fold_idx[f] for f in sorted(fold_idx)]
     views = PRESET_VIEW_SETS.get(args.views, args.views.split(','))
 
-    print(f'== single groups ({len(folds)} folds, {sum(len(f) for f in fold_sets):,} OOF images) ==')
+    print(f'== single groups ({len(fold_sets)} folds, {sum(len(f) for f in fold_sets):,} OOF images) ==')
     for group in groups:
+        own_sets = [fold_idx[f] for f in group.folds]
+        own = np.concatenate(own_sets)
         available = group.available_views()
         for preset, preset_views in PRESET_VIEW_SETS.items():
             if all(v in available for v in preset_views):
-                print(score_line(f'{group.label} [{preset}]', labels, group.oof(preset_views), fold_sets))
+                print(score_line(f'{group.label} [{preset}]', labels, group.oof(preset_views), own_sets))
         if len(available) > 1:
-            singles = '  '.join(f'{v} {macro_f1(labels[np.concatenate(fold_sets)], group.oof([v])[np.concatenate(fold_sets)].argmax(1)):.4f}'
+            singles = '  '.join(f'{v} {macro_f1(labels[own], group.oof([v])[own].argmax(1)):.4f}'
                                 for v in available)
             print(f'    single views: {singles}')
 
@@ -173,13 +201,13 @@ def main() -> None:
         views = ['id']
     weights = [float(w) for w in args.weights.split(',')] if args.weights else [1.0] * len(groups)
     oofs = [g.oof(views) for g in groups]
-    ensemble = sum(w * p for w, p in zip(weights, oofs)) / sum(weights)
+    ensemble = blend(oofs, weights)
     print(f'\n== ensemble of {len(groups)} group(s), views {views}, weights {weights} ==')
     print(score_line('ensemble', labels, ensemble, fold_sets))
     if args.search and len(groups) > 2:
         for size in range(2, len(groups)):
             for combo in combinations(range(len(groups)), size):
-                mix = np.mean([oofs[i] for i in combo], axis=0)
+                mix = blend([oofs[i] for i in combo], [1.0] * size)
                 print(score_line('+'.join(groups[i].label for i in combo), labels, mix, fold_sets))
 
     covered = np.concatenate(fold_sets)

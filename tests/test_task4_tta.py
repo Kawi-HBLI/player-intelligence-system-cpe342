@@ -64,6 +64,19 @@ class OOFHelperTest(unittest.TestCase):
             self.assertTrue(set(views) <= set(t4.KNOWN_VIEWS))
         self.assertTrue(set(t4.TTA_VIEWS) <= set(t4.KNOWN_VIEWS))
 
+    def test_parse_group_with_and_without_own_folds(self):
+        self.assertEqual(oof.parse_group('cnt=cnt_sc_f{fold}', [0, 1, 2]), ('cnt', 'cnt_sc_f{fold}', [0, 1, 2]))
+        self.assertEqual(oof.parse_group('ev=ev2sRS_sc_f{fold}@0,1', [0, 1, 2]), ('ev', 'ev2sRS_sc_f{fold}', [0, 1]))
+        with self.assertRaises(SystemExit):
+            oof.parse_group('cnt=cnt_sc_f0', [0])
+
+    def test_blend_averages_only_groups_that_cover_a_row(self):
+        full = np.array([[0.8, 0.2], [0.6, 0.4]], dtype=np.float32)
+        partial = np.array([[0.2, 0.8], [np.nan, np.nan]], dtype=np.float32)
+        mixed = oof.blend([full, partial], [1.0, 1.0])
+        self.assertTrue(np.allclose(mixed, [[0.5, 0.5], [0.6, 0.4]]))
+        self.assertTrue(np.allclose(oof.blend([full, full * 0.5], [3.0, 1.0]), full * 0.875))
+
 
 class StressDamageTest(unittest.TestCase):
     def test_every_damage_keeps_shape_range_and_repeats(self):
