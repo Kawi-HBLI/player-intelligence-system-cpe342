@@ -1,0 +1,49 @@
+{
+  "variant": "v9a",
+  "imputed_features": [
+    "prev_month_spending"
+  ],
+  "protocol": "honest-es",
+  "imputer": "HistGradientBoostingRegressor(random_state=342) on log1p(feature) from the other raw features, fitted on the training rows only; values clipped to the observed range",
+  "amount_params_from": "experiments/task3/model/tuning/v8.json",
+  "amount_params": {
+    "depth": 4,
+    "learning_rate": 0.020761390013963914,
+    "l2_leaf_reg": 7.814150272174695,
+    "random_strength": 2.131364069833348,
+    "bagging_temperature": 0.10552744893945885,
+    "border_count": 64,
+    "grow_policy": "SymmetricTree",
+    "bootstrap_type": "Bayesian"
+  },
+  "amount_iterations_limit": 5000,
+  "classifier_best_iterations": [
+    89,
+    121,
+    122
+  ],
+  "amount_best_iterations": [
+    2140,
+    1893,
+    2101
+  ],
+  "amount_best_iterations_seed1342": [
+    2162,
+    1766,
+    2031
+  ],
+  "fold_scores": [
+    0.801877,
+    0.78722,
+    0.795327
+  ],
+  "oof": 0.794729,
+  "fold_scores_seed1342": [
+    0.801946,
+    0.78717,
+    0.795355
+  ],
+  "oof_seed1342": 0.794744,
+  "threads": 12,
+  "date": "2026-11-19"
+}

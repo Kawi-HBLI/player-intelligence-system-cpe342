@@ -1,0 +1,44 @@
+{
+  "trial": 16,
+  "study": "task3_amount_v4_honest",
+  "protocol": "honest-es",
+  "amount_params": {
+    "depth": 4,
+    "learning_rate": 0.020761390013963914,
+    "l2_leaf_reg": 7.814150272174695,
+    "random_strength": 2.131364069833348,
+    "bagging_temperature": 0.10552744893945885,
+    "border_count": 64,
+    "grow_policy": "SymmetricTree",
+    "bootstrap_type": "Bayesian"
+  },
+  "amount_iterations_limit": 5000,
+  "amount_best_iterations": [
+    2969,
+    3127,
+    2096
+  ],
+  "amount_best_iterations_seed1342": [
+    3009,
+    3398,
+    3435
+  ],
+  "classifier_best_iterations": [
+    98,
+    182,
+    240
+  ],
+  "fold_scores": [
+    0.798653,
+    0.784773,
+    0.793209
+  ],
+  "oof": 0.792138,
+  "fold_scores_seed1342": [
+    0.798344,
+    0.784636,
+    0.793377
+  ],
+  "oof_seed1342": 0.792046,
+  "date": "2026-11-15"
+}

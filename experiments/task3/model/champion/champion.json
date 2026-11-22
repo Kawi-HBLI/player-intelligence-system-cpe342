@@ -1,0 +1,82 @@
+{
+  "name": "V9a: V8 + label-free imputation of prev_month_spending (in-fold, outer-train rows only)",
+  "variant": "v9a",
+  "protocol": "honest-es",
+  "protocol_note": "early stopping on a fixed 85%/15% fit/es split of each outer-training part (seed 342 + fold, stratified on y > 0 for two-stage models); the outer validation fold is only scored; predictions capped at the outer-training max target",
+  "script": "experiments/task3/model/v9_impute/v9_impute.py",
+  "branch": "task3/v9-impute",
+  "commit": "dd63696+dirty",
+  "commit_note": "HEAD when the run started; the promotion itself lands in the next commit",
+  "fold_scores": [
+    0.801877,
+    0.78722,
+    0.795327
+  ],
+  "oof": 0.794729,
+  "fold_scores_seed1342": [
+    0.801946,
+    0.78717,
+    0.795355
+  ],
+  "oof_seed1342": 0.794744,
+  "date": "2026-11-19",
+  "previous_champion": "V8: V4 + Optuna-tuned amount model (trial 16)",
+  "previous_champion_fold_scores": [
+    0.798653,
+    0.784773,
+    0.793209
+  ],
+  "previous_champion_oof": 0.792138,
+  "rule": "promoted only if it beats the current champion on all 3 folds, within the same protocol, in both amount seed runs (342 + fold and 1342 + fold)",
+  "previous_protocol": {
+    "protocol": "val-es",
+    "protocol_note": "early stopping on the scored outer validation fold (slightly optimistic OOF)",
+    "name": "V4 quantile combine, q = 1 − 0.5/p, t=0.5",
+    "variant": "v4",
+    "script": "experiments/task3/model/amount_model/amount_model.py",
+    "branch": "task3/quantile-combine",
+    "commit": "2c9b869",
+    "fold_scores": [
+      0.798169,
+      0.784066,
+      0.793399
+    ],
+    "oof": 0.791801,
+    "date": "2026-11-15"
+  },
+  "lb_history": [
+    {
+      "variant": "v3",
+      "date": "2026-11-15",
+      "public": 0.80313,
+      "base_public": 0.80097,
+      "delta": 0.00216,
+      "method": "task3 column swap via make_submission.py"
+    },
+    {
+      "variant": "v4_refit",
+      "date": "2026-11-15",
+      "public": 0.80371,
+      "base_public": 0.80097,
+      "delta": 0.00274,
+      "method": "task3 column swap via make_submission.py; full-train refit, 3 seeds"
+    },
+    {
+      "variant": "v8_refit",
+      "date": "2026-11-16",
+      "public": 0.80684,
+      "base_public": 0.80676,
+      "delta": 8e-05,
+      "method": "task3 column swap via make_submission.py; base task3 was V4 refit"
+    },
+    {
+      "variant": "v9a_refit",
+      "date": "2026-11-20",
+      "public": 0.82369,
+      "base_public": 0.82343,
+      "delta": 0.00026,
+      "method": "task3 column swap via make_submission.py; base task3 was V8 refit"
+    }
+  ],
+  "submission": "v9a_refit"
+}
