@@ -29,7 +29,7 @@ naive Bayes เหมาะกับงานนี้เพราะสมม�
 
 ## ผลในเครื่อง
 
-ทุกแถวใช้ fold ชุดเดียวกัน (StratifiedKFold 3, seed 342) รันซ้ำได้ด้วย `python Task2/experiments.py ../cpe342-kaggle-main outputs/exp/task2`
+ทุกแถวใช้ fold ชุดเดียวกัน (StratifiedKFold 3, seed 342) รันซ้ำได้ด้วย `python experiments/task2/experiments.py ../cpe342-kaggle-main outputs/exp/task2`
 
 | โมเดล | Macro F1 | logloss |
 |---|---|---|
@@ -53,7 +53,7 @@ naive Bayes เหมาะกับงานนี้เพราะสมม�
 
 ## การทดลองรอบ 2: density ราย feature และจำนวนข้อมูลเทรน
 
-รันซ้ำได้ด้วย `python Task2/experiments_round2.py ../cpe342-kaggle-main` (ราว 80 นาที เพราะเทรน CatBoost 24 รอบ)
+รันซ้ำได้ด้วย `python experiments/task2/experiments_round2.py ../cpe342-kaggle-main` (ราว 80 นาที เพราะเทรน CatBoost 24 รอบ)
 
 | การทดลอง | Macro F1 |
 |---|---|
@@ -82,6 +82,8 @@ naive Bayes เหมาะกับงานนี้เพราะสมม�
 ## ไฟล์
 
 - `train.py` รันงานนี้: `python Task2/train.py --folds 3`
-- `experiments.py` การทดลองในตารางแรก
-- `experiments_round2.py` การทดลองรอบ 2 (sigma ราย feature และจำนวน fold)
+- การทดลองอยู่ใน `experiments/task2/`:
+  - `experiments.py` การทดลองในตารางแรก
+  - `experiments_round2.py` การทดลองรอบ 2 (sigma ราย feature และจำนวน fold)
+  - `eda/` EDA เรื่องค่าว่างและการกระจายของแต่ละฟีเจอร์
 - โค้ดหลักอยู่ที่ `pis/tabular.py` และ `pis/task2_naive_bayes.py`

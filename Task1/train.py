@@ -6,7 +6,7 @@ The shared implementation lives in the `pis` package.
 
 Task 1 uses 10 folds unless --folds is given: each fold model then trains on 90% of the
 labelled rows instead of 67%, which raised OOF macro F2 from 0.7807 to 0.7818 (see
-Task1/experiments_round3.py). The test prediction is the mean of the 10 fold models.
+experiments/task1/experiments_round3.py). The test prediction is the mean of the 10 fold models.
 """
 import sys
 from pathlib import Path
