@@ -7,6 +7,8 @@ __pycache__/
 outputs/
 *.zip
 *.csv
+# Final Task 4 predictions (conv4p) are tracked so submission.csv can be built without the training runs.
+!Task4/final/*.csv
 *.cbm
 *.joblib
 *.pkl
