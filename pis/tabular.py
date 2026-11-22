@@ -22,6 +22,7 @@ TASKS = {1: ('01_binary_classification', 'is_cheater'),
          2: ('02_multiclass_classification', 'segment'),
          3: ('03_regression', 'spending_30d')}
 ITERATIONS = {'quick': 250, 'balanced': 1000, 'strong': 2000}
+TASK2_BAYES_WEIGHT = 0.6  # naive Bayes share in the Task 2 geometric blend
 
 
 def _score(y, prediction):
@@ -31,7 +32,17 @@ def _score(y, prediction):
     return 1.0 / (1.0 + float(np.abs(np.asarray(y) - prediction).sum()) / denominator)
 
 
+def _f2_cheater(y, prediction):
+    """Task 1 score: F2 of the cheater class (label 1)."""
+    return float(fbeta_score(y, prediction, beta=2, zero_division=0))
+
+
 def _threshold(y, probabilities):
+    """Threshold that maximises F2 of the cheater class, and that score.
+
+    Plain F2 on class 1 rewards recall on cheaters only, so its best threshold sits far
+    lower than the one that maximises macro F2 (about 0.18 against 0.39 on Task 1 OOF).
+    """
     # At each distinct probability include every observation with probability >= threshold.
     order = np.argsort(-probabilities, kind='stable')
     p, target = probabilities[order], np.asarray(y)[order].astype(int)
@@ -39,13 +50,9 @@ def _threshold(y, probabilities):
     tp = np.cumsum(target)[ends].astype(float)
     fp = (ends + 1) - tp
     fn = target.sum() - tp
-    tn = len(target) - tp - fp - fn
-    pos = np.divide(5 * tp, 5 * tp + 4 * fn + fp, out=np.zeros_like(tp), where=(5 * tp + 4 * fn + fp) != 0)
-    neg = np.divide(5 * tn, 5 * tn + 4 * fp + fn, out=np.zeros_like(tn), where=(5 * tn + 4 * fp + fn) != 0)
-    scores = (pos + neg) / 2
-    none_score = fbeta_score(target, np.zeros_like(target), beta=2, average='macro', zero_division=0)
+    scores = np.divide(5 * tp, 5 * tp + 4 * fn + fp, out=np.zeros_like(tp), where=(5 * tp + 4 * fn + fp) != 0)
     i = int(np.argmax(scores))
-    return (float(np.nextafter(p[0], np.inf)), float(none_score)) if none_score > scores[i] else (float(p[ends[i]]), float(scores[i]))
+    return float(p[ends[i]]), float(scores[i])
 
 
 def _prepare(train, test, target):
@@ -102,6 +109,16 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
     if train.empty:
         raise ValueError('No labeled training rows')
     x, xt, categorical = _prepare(train, test, target)
+    if task == 1:
+        from .task1_features import build as build_task1_features
+        x, xt = build_task1_features(x, xt, seed)
+    if task == 2:
+        # Task 2 features are near-independent within a segment, so a smoothed naive Bayes
+        # is blended with the boosted trees (OOF macro F1 0.752 -> 0.756). It reads the raw
+        # columns so that missing values stay missing.
+        from .task2_naive_bayes import SmoothNaiveBayes, geometric_blend
+        bayes_columns = [c for c in x.columns if not c.startswith('random_metric')]
+        bayes_x, bayes_xt = train[bayes_columns], test[bayes_columns]
     y = train[target].to_numpy()
     if task == 3 and (np.any(y < 0) or np.sum(y) <= 0):
         raise ValueError('Task 3 targets must be nonnegative with positive sum')
@@ -158,10 +175,16 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
             else:
                 fold_classes = model.classes_ if chosen == 'catboost' else model.named_steps['model'].classes_
                 indices = [int(np.flatnonzero(fold_classes == c)[0]) for c in classes]
-                oof[va] = model.predict_proba(val_x)[:, indices]
-                test_preds += model.predict_proba(test_x)[:, indices] / folds
+                val_proba = model.predict_proba(val_x)[:, indices]
+                test_proba = model.predict_proba(test_x)[:, indices]
+                if task == 2:
+                    bayes = SmoothNaiveBayes().fit(bayes_x.iloc[tr], y[tr])
+                    val_proba = geometric_blend(val_proba, bayes.predict_proba(bayes_x.iloc[va]), TASK2_BAYES_WEIGHT)
+                    test_proba = geometric_blend(test_proba, bayes.predict_proba(bayes_xt), TASK2_BAYES_WEIGHT)
+                oof[va] = val_proba
+                test_preds += test_proba / folds
                 fold_pred = (oof[va, 1] >= 0.5).astype(int) if task == 1 else classes[oof[va].argmax(axis=1)]
-                fold_scores.append(float(fbeta_score(y[va], fold_pred, beta=2, average='macro', zero_division=0) if task == 1 else f1_score(y[va], fold_pred, average='macro', zero_division=0)))
+                fold_scores.append(_f2_cheater(y[va], fold_pred) if task == 1 else float(f1_score(y[va], fold_pred, average='macro', zero_division=0)))
     metrics = {'task': task, 'engine': chosen, 'profile': profile, 'folds': folds, 'seed': seed,
                'threads': threads, 'iterations_limit': iters, 'n_train': len(train), 'n_test': len(test),
                'n_train_total': n_train_total, 'n_labeled': len(train), 'n_unlabeled_dropped': len(unlabeled),
@@ -172,10 +195,11 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
         threshold, tuned = _threshold(y, oof[:, 1])
         oof_prediction = (oof[:, 1] >= threshold).astype(int)
         prediction = (test_preds[:, 1] >= threshold).astype(int)
-        metrics.update(metric='macro_f2', oof_score=tuned, threshold=threshold,
+        metrics.update(metric='f2_cheater_class', oof_score=tuned, threshold=threshold,
                        threshold_note='Threshold tuned and evaluated on the same OOF labels; tuned score is optimistic.',
-                       fixed_0_5_oof_score=float(fbeta_score(y, oof[:, 1] >= 0.5, beta=2, average='macro', zero_division=0)),
-                       baseline_score=float(fbeta_score(y, baseline, beta=2, average='macro', zero_division=0)))
+                       fixed_0_5_oof_score=_f2_cheater(y, oof[:, 1] >= 0.5),
+                       baseline_score=_f2_cheater(y, baseline),
+                       macro_f2_at_threshold=float(fbeta_score(y, oof_prediction, beta=2, average='macro', zero_division=0)))
         oof_frame['probability_1'] = oof[:, 1]
     elif task == 2:
         oof_prediction, prediction = classes[oof.argmax(axis=1)], classes[test_preds.argmax(axis=1)]
