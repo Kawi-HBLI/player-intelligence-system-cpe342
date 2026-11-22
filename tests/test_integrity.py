@@ -16,6 +16,8 @@ from pis.anomaly import (
     topological_island_score,
     train_anomaly,
 )
+from pis.task2_naive_bayes import SmoothNaiveBayes, geometric_blend
+from pis.task1_features import add_range_rules, add_imputed, fit_imputers, IMPUTED
 from pis.submission import assemble, validate_frame
 from pis.common import TASKS
 from prepare_images import extract
@@ -37,14 +39,54 @@ class IntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(_score(np.array([0,100,200]),np.array([0,80,220])), 1/(1+40/300))
         self.assertEqual(_score(np.array([0,100,200]),np.zeros(3)), 0.5)
 
-    def test_threshold_handles_ties_and_optimizes_macro(self):
+    def test_threshold_handles_ties_and_optimizes_cheater_f2(self):
         y = np.array([0,0,0,1,1,1,0,1])
         p = np.array([.1,.2,.5,.5,.8,.9,.8,.2])
         threshold, score = _threshold(y,p)
-        candidates = np.r_[p, np.nextafter(max(p),np.inf)]
-        expected = max(fbeta_score(y,p>=t,beta=2,average='macro') for t in candidates)
+        expected = max(fbeta_score(y,p>=t,beta=2) for t in p)
         self.assertAlmostEqual(score,expected)
-        self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2,average='macro'))
+        self.assertAlmostEqual(score,fbeta_score(y,p>=threshold,beta=2))
+
+    def test_threshold_differs_from_macro_choice(self):
+        # Low threshold wins for F2 on the cheater class even when macro F2 prefers a higher one.
+        y = np.array([1,0,1,0,0,0,0,1,0,0])
+        p = np.array([.9,.8,.7,.6,.5,.4,.3,.2,.1,.05])
+        threshold, _ = _threshold(y,p)
+        self.assertEqual(threshold, .2)
+        best_macro = max(p, key=lambda t: fbeta_score(y,p>=t,beta=2,average='macro'))
+        self.assertGreater(best_macro, threshold)
+
+    def test_task1_range_rules_count_certain_cases_and_ignore_missing(self):
+        frame = pd.DataFrame({'crosshair_placement':[0.81,0.95,np.nan],'reports_received':[4,25,np.nan],
+                              'level':[26.,99.,np.nan],'account_age_days':[100.,1200.,np.nan],
+                              'friend_network_size':[50.,300.,np.nan],'level_progression_speed':[1.,7.,np.nan]})
+        out = add_range_rules(frame)
+        self.assertEqual(out.n_sure_cheat_rules.tolist(),[3,0,0])   # below every legit floor
+        self.assertEqual(out.n_sure_legit_rules.tolist(),[0,6,0])   # above every cheater ceiling
+        self.assertTrue(np.isnan(out.loc[2,'level_above_legit_floor']))
+
+    def test_task1_imputed_columns_keep_observed_values(self):
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame({c: rng.normal(50, 5, 300) for c in IMPUTED})
+        frame['other'] = rng.normal(size=300)
+        frame.loc[:20, 'level'] = np.nan
+        out = add_imputed(frame, fit_imputers(frame))
+        self.assertTrue(out['level_imp'].notna().all())
+        self.assertTrue((out.loc[21:, 'level_imp'] == frame.loc[21:, 'level']).all())
+
+    def test_smooth_naive_bayes_separates_classes_and_ignores_missing(self):
+        rng = np.random.default_rng(0)
+        y = np.repeat([0, 1], 500)
+        frame = pd.DataFrame({'spend': np.r_[rng.normal(0, 1, 500), rng.normal(4, 1, 500)],
+                              'tier': np.r_[rng.choice(['a', 'b'], 500, p=[.9, .1]), rng.choice(['a', 'b'], 500, p=[.1, .9])]})
+        model = SmoothNaiveBayes().fit(frame, y)
+        self.assertGreater((model.predict_proba(frame).argmax(1) == y).mean(), 0.95)
+        empty = pd.DataFrame({'spend': [np.nan], 'tier': [None]})
+        np.testing.assert_allclose(model.predict_proba(empty)[0], [0.5, 0.5], atol=1e-9)   # only the prior is left
+        unseen = pd.DataFrame({'spend': [np.nan], 'tier': ['zzz']})
+        np.testing.assert_allclose(model.predict_proba(unseen)[0], [0.5, 0.5], atol=1e-9)
+        blend = geometric_blend(np.array([[0.8, 0.2]]), np.array([[0.2, 0.8]]), 0.5)
+        np.testing.assert_allclose(blend, [[0.5, 0.5]], atol=1e-6)
 
     def test_shift_score_ranks_abrupt_period_jump_highest(self):
         rng = np.random.default_rng(0)
