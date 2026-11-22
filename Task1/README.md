@@ -39,7 +39,7 @@
 
 ตารางนี้วัดด้วย macro F2 (threshold ประมาณ 0.38) ไม่ใช่ metric ของ Kaggle ผลบน F2 ของคลาสคนโกงอยู่ในรอบ 4
 
-ทุกแถวใช้ fold ชุดเดียวกัน (StratifiedKFold 3, seed 342) รันซ้ำได้ด้วย `python Task1/experiments.py ../cpe342-kaggle-main`
+ทุกแถวใช้ fold ชุดเดียวกัน (StratifiedKFold 3, seed 342) รันซ้ำได้ด้วย `python experiments/task1/experiments.py ../cpe342-kaggle-main`
 
 | การทดลอง | AUC | Macro F2 ที่ 0.5 | Macro F2 ปรับ threshold |
 |---|---|---|---|
@@ -58,7 +58,7 @@
 
 ตารางนี้วัดด้วย macro F2 (threshold ประมาณ 0.38) ไม่ใช่ metric ของ Kaggle ผลบน F2 ของคลาสคนโกงอยู่ในรอบ 4
 
-ใช้ฟีเจอร์ชุดที่ใช้อยู่เป็นฐานและ fold ชุดเดิม รันซ้ำได้ด้วย `python Task1/experiments_round2.py ../cpe342-kaggle-main`
+ใช้ฟีเจอร์ชุดที่ใช้อยู่เป็นฐานและ fold ชุดเดิม รันซ้ำได้ด้วย `python experiments/task1/experiments_round2.py ../cpe342-kaggle-main`
 
 | การทดลอง | AUC | Macro F2 ปรับ threshold |
 |---|---|---|
@@ -80,7 +80,7 @@
 
 ตารางนี้วัดด้วย macro F2 (threshold ประมาณ 0.38) ไม่ใช่ metric ของ Kaggle ผลบน F2 ของคลาสคนโกงอยู่ในรอบ 4
 
-รันซ้ำได้ด้วย `python Task1/experiments_round3.py ../cpe342-kaggle-main`
+รันซ้ำได้ด้วย `python experiments/task1/experiments_round3.py ../cpe342-kaggle-main`
 
 | การทดลอง | AUC | Macro F2 ปรับ threshold |
 |---|---|---|
@@ -102,7 +102,7 @@
 - fold ชุดเดิม (StratifiedKFold 3, seed 342), ฟีเจอร์จาก `pis/task1_features.py`, CatBoost ตั้งค่าเหมือน pipeline, 12 thread แถว "ที่ใช้อยู่" ได้ OOF ตรงกับ pipeline ทุกค่า
 - F2 = F2 ของคลาสคนโกงที่ threshold จูนบน OOF ทั้งชุด (`_threshold`) ส่วน F2 ราย fold จูน threshold แยกในแต่ละ fold
 - กฎตัดสิน (แบบเดียวกับ Task 3): ต้องดีกว่าที่ใช้อยู่ ≥ +0.0015 **และ** ชนะครบ 3 fold **และ** ยังชนะเมื่อแบ่ง fold ด้วย seed 343 ตัวที่ผ่านจึงจะรันด้วย 10 fold (pipeline ได้ OOF F2 0.8388)
-- รันซ้ำได้ด้วย `python Task1/experiments_round4.py ../cpe342-kaggle-main --threads 12` (ประมาณ 7 นาที) OOF ของแต่ละแบบเก็บไว้ที่ `outputs/experiments/task1_round4/<name>.npy`
+- รันซ้ำได้ด้วย `python experiments/task1/experiments_round4.py ../cpe342-kaggle-main --threads 12` (ประมาณ 7 นาที) OOF ของแต่ละแบบเก็บไว้ที่ `outputs/experiments/task1_round4/<name>.npy`
 
 | การทดลอง | AUC | F2 คนโกง | เทียบที่ใช้อยู่ | threshold | F2 ราย fold | ชนะ fold | macro F2 (อ้างอิง) | เวลา |
 |---|---|---|---|---|---|---|---|---|
@@ -142,7 +142,7 @@
 
 แถวที่ข้อมูลครบทุกฟีเจอร์ยังได้ AUC แค่ 0.918 ส่วนที่เหลือจึงเป็นการซ้อนทับของสองกลุ่มที่ข้อมูลไม่ได้บอก
 
-วัดด้วย F2 ของคลาสคนโกงที่ threshold ของ pipeline (0.1805, OOF 3 fold) แถว train ที่ว่างไม่เกิน 2 ฟีเจอร์ (23,396 แถว) ได้ 0.852 แถวที่เหลือได้ 0.833 และทั้งชุดได้ 0.838 threshold ที่ดีที่สุดของแต่ละกลุ่มจำนวนช่องที่ว่าง (0-2, 3-4, 5-6, 7+) อยู่ที่ 0.159 ถึง 0.186 ใกล้กับค่าเดียว 0.181 ถ้าใช้ threshold แยกกลุ่ม (เลือกบน 2 fold วัดบน fold ที่ 3) ได้แค่ +0.0004 จึงใช้ threshold เดียวกับทุกแถวต่อไป (`Task1/eda/missing_eda.ipynb` ส่วน 1b)
+วัดด้วย F2 ของคลาสคนโกงที่ threshold ของ pipeline (0.1805, OOF 3 fold) แถว train ที่ว่างไม่เกิน 2 ฟีเจอร์ (23,396 แถว) ได้ 0.852 แถวที่เหลือได้ 0.833 และทั้งชุดได้ 0.838 threshold ที่ดีที่สุดของแต่ละกลุ่มจำนวนช่องที่ว่าง (0-2, 3-4, 5-6, 7+) อยู่ที่ 0.159 ถึง 0.186 ใกล้กับค่าเดียว 0.181 ถ้าใช้ threshold แยกกลุ่ม (เลือกบน 2 fold วัดบน fold ที่ 3) ได้แค่ +0.0004 จึงใช้ threshold เดียวกับทุกแถวต่อไป (`experiments/task1/eda/missing_eda.ipynb` ส่วน 1b)
 
 ถ้าทุกแถวทายได้ดีเท่าแถวที่ว่างไม่เกิน 1 ฟีเจอร์ F2 ของคลาสคนโกงจะเพิ่มได้ +0.017 นี่คือขนาดของเพดานจากค่าว่าง แต่การเติมค่าจากฟีเจอร์อื่นกู้คืนไม่ได้ เพราะข้อมูลที่หายไปไม่ได้อยู่ในฟีเจอร์อื่น (notebook เดียวกัน ส่วน 5)
 
@@ -160,8 +160,11 @@
 ## ไฟล์
 
 - `train.py` รันงานนี้: `python Task1/train.py` (10 fold เป็นค่าเริ่มต้น ใส่ `--folds 3` ถ้าต้องการรันเร็ว)
-- `experiments.py` การทดลองฝั่งฟีเจอร์ (ตารางแรก)
-- `experiments_round2.py` การทดลองฝั่งโมเดล (ตารางรอบ 2)
-- `experiments_round3.py` ค่าประมาณเพิ่ม และจำนวน fold (ตารางรอบ 3)
-- `experiments_round4.py` วัดตัวที่เกือบผ่านใหม่ด้วย F2 ของคลาสคนโกง (ตารางรอบ 4)
+- การทดลองอยู่ใน `experiments/task1/`:
+  - `experiments.py` การทดลองฝั่งฟีเจอร์ (ตารางแรก)
+  - `experiments_round2.py` การทดลองฝั่งโมเดล (ตารางรอบ 2)
+  - `experiments_round3.py` ค่าประมาณเพิ่ม และจำนวน fold (ตารางรอบ 3)
+  - `experiments_round4.py` วัดตัวที่เกือบผ่านใหม่ด้วย F2 ของคลาสคนโกง (ตารางรอบ 4)
+  - `task1_walkthrough.ipynb` อธิบายงานนี้ทีละขั้น
+  - `eda/` EDA เรื่องค่าว่าง ช่องว่างระหว่างโมเดล และ threshold ของค่าเฉลี่ย 10 โมเดล
 - โค้ดหลักอยู่ที่ `pis/tabular.py` (ใช้ร่วมกับ Task 2 และ 3) และ `pis/task1_features.py` (ฟีเจอร์เฉพาะงานนี้)

@@ -28,8 +28,8 @@
   ```bash
   python Task5/train.py --data-root ../cpe342-kaggle-main --profile strong --contamination auto
   ```
-- ผลลัพธ์ล่าสุดใน [outputs/main](file:///c:/Users/User/Downloads/mLProject/outputs/main) (`--profile strong`): คาดการณ์สัดส่วนผิดปกติ `estimated_prevalence = 7.93%`, ปักธง `2,008` แถว (`7.76%`), คงไฟล์ Tasks 1–4 จาก `baseline/` ไว้ครบและผ่าน `run.py validate` แล้ว
-- สคริปต์ [Task5/synthetic_eval.py](file:///c:/Users/User/Downloads/mLProject/Task5/synthetic_eval.py) และ unit tests ใน [tests/test_integrity.py](file:///c:/Users/User/Downloads/mLProject/tests/test_integrity.py) ใช้ตรวจสอบการทำงานของ detector บนข้อมูลจำลองที่ไม่มีความสัมพันธ์แฝง
+- ผลลัพธ์อยู่ใน `outputs/main/` (`task5_predictions.csv`, `task5_scores.csv`, `task5_metrics.json`)
+- สคริปต์ `Task5/synthetic_eval.py` และ unit tests ใน `tests/test_integrity.py` ใช้ตรวจสอบการทำงานของ detector บนข้อมูลจำลองที่ไม่มีความสัมพันธ์แฝง
 
 ## รุ่น v2 (branch `task5-boost`): สิ่งที่พบและสิ่งที่เปลี่ยน
 

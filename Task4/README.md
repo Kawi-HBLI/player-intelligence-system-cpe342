@@ -130,7 +130,7 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
 
 - `train.py` ตัวใหม่ ต้องใช้ PyTorch ที่รองรับ CUDA (ราว 1 ชม. บน RTX 4050):
   - เทรน: `python Task4/train.py --run-name r3d_lr2e-4 --model convnext_tiny --split near-copy --epochs 15 --schedule cosine --aug strong --lr-backbone 2e-4`
-  - ทายภาพ test: `python Task4/train.py --mode predict --run-name r3d_lr2e-4` ได้ `outputs/main/task4_predictions.csv` สำหรับ `python run.py assemble` และ `outputs/task4_exp/<run>/submission.csv` (= `baseline/submission.csv` ที่เปลี่ยนแค่คอลัมน์ task4)
+  - ทายภาพ test: `python Task4/train.py --mode predict --run-name r3d_lr2e-4` ได้ `outputs/main/task4_predictions.csv` สำหรับ `python run.py assemble`
   - ผลแต่ละรอบอยู่ใน `outputs/task4_exp/` (`results.csv` รวมทุกรอบ) หยุดกลางคันแล้วรันคำสั่งเดิม + `--resume` เพื่อทำต่อ
   - เทรนบน scene split ทีละ fold: `python Task4/train.py --run-name cnsRS2_sc_f0 --model convnext_small --split scene --fold 0 --epochs 15 --schedule cosine --micro-batch 32 --aug robust --multi-scale --lr-backbone 1.5e-4` (ConvNeXt-S ต้อง micro-batch 32 ถึงจะพอดี GPU 8 GB)
   - TTA: `python Task4/train.py --mode tta --run-name cnsRS2_sc_f0` คำนวณห้ามุมมองตั้งต้นทั้ง validation และ test ถ้าใส่ `--tta-views id,hflip,...` จะคำนวณเฉพาะมุมมองที่ยังไม่มีแล้วต่อท้ายไฟล์เดิม

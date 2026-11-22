@@ -1,4 +1,4 @@
-"""Run from a terminal or import the same functions from the teaching notebook."""
+"""Command-line entry point: audit the data, train a task, assemble or validate a submission."""
 import argparse
 import logging
 import os
