@@ -86,6 +86,36 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
   - `cnsRS2`: `--model convnext_small --micro-batch 32 --aug robust --multi-scale --lr-backbone 1.5e-4`
   - `ev2sRS`: `--model efficientnet_v2_s --micro-batch 64 --aug robust --multi-scale --lr-backbone 5e-4 --lr-head 1e-3`
 
+### DINOv2 ViT-B/14 (เพิ่ม 23 พ.ย.)
+
+ทุกชุดข้างบนใช้น้ำหนัก ImageNet-1k ของ torchvision อย่างเดียว รอบนี้ลอง DINOv2 ของ Meta ซึ่งเป็น ViT ที่ pretrain แบบ self-supervised บนภาพจำนวนมาก กติกาข้อ 3 อนุญาตให้งานนี้ใช้โมเดล pretrained และยก ViT เป็นตัวอย่าง TA ตอบไว้ว่าไม่จำกัด license ขอแค่ไม่ละเมิด license ของโมเดลเอง โค้ดและน้ำหนักของ DINOv2 ใช้ Apache 2.0 ทีมตกลงกันแล้วก่อนใช้
+
+- โหลดผ่าน `torch.hub` (`facebookresearch/dinov2`) ต่อ linear layer บน [CLS token, ค่าเฉลี่ย patch token] ครั้งแรกต้องต่อเน็ตเพื่อดาวน์โหลดโค้ดและน้ำหนัก (ราว 350 MB) คำเตือนเรื่อง xFormers ไม่มีผลกับผล
+- ภาพ 168x322 (ต้องเป็นเลขคูณ 14 ตามขนาด patch จึงไม่ใช้ `--multi-scale`) 12 epoch, cosine, lr backbone 2e-5 / head 5e-4, weight decay 0.05, aug robust ราว 50 นาทีต่อ fold บน RTX 4070 Laptop 8 GB
+- เทรนครบ 5 scene fold แล้วทำ TTA ห้ามุมมองเหมือนชุดอื่น:
+
+```bash
+python Task4/train.py --run-name dnbR_sc_f0 --model dinov2_vitb14 --split scene --fold 0 --epochs 12 --schedule cosine --micro-batch 32 --aug robust --lr-backbone 2e-5 --lr-head 5e-4 --weight-decay 0.05 --height 168 --width 322
+python Task4/train.py --mode tta --run-name dnbR_sc_f0
+```
+
+| ชุด | TTA | OOF | ผิด (ภาพ) | fold 0 / 1 / 2 / 3 / 4 |
+|---|---|---|---|---|
+| conv4p | rot8+zoom | 0.9691 | 876 | 0.9732 / 0.8968 / 0.9755 / 0.9871 / 0.9771 |
+| DINOv2 ViT-B/14 ตัวเดียว | rot8+zoom | 0.9718 | 798 | 0.9770 / 0.9000 / 0.9775 / 0.9915 / 0.9824 |
+| 0.4 conv4p + 0.6 DINOv2 | rot8+zoom | 0.9733 | 755 | 0.9805 / 0.9007 / 0.9794 / 0.9929 / 0.9826 |
+
+- DINOv2 ตัวเดียวชนะ conv4p ทุก fold รวม fold 1 ที่ยากที่สุดด้วย ทั้งที่ conv4p เป็นค่าเฉลี่ยของ 17 โมเดล
+- น้ำหนักผสมเลือกจาก OOF โดยลอง 0 ถึง 1 ทีละ 0.1 ช่วง 0.5 ถึง 0.7 ต่างกันไม่ถึง 0.0003 (ไม่กี่ภาพ) เลือก 0.6 ที่ OOF สูงสุด ถ้าเท่ากันจะเลือกค่าที่ใกล้ 0.5
+- F1 รายคลาสของชุดผสม: 7-11k 0.977, fiveN 0.963, freefried 0.987, pube 0.987, roblock 0.953 คลาสที่ยังแย่สุดยังเป็น roblock กับ fiveN และส่วนใหญ่ผิดเพราะสับสนกับ 7-11k
+- สร้างความน่าจะเป็นของ test ด้วย `oof.py` ได้ตรงกับสัดส่วน 0.4/0.6 พอดี เพราะ conv4p มี 4 กลุ่มน้ำหนัก 1 และ DINOv2 น้ำหนัก 6:
+
+```bash
+python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}" --group "cnsRS2=cnsRS2_sc_f{fold}" --group "ev2sRS=ev2sRS_sc_f{fold}@0,1" --group "dino=dnbR_sc_f{fold}" --views rot8+zoom --weights 1,1,1,1,6 --write-pred outputs/task4_exp/conv4p_dino/task4_predictions.csv
+```
+
+  OOF ที่ `oof.py` พิมพ์ออกมาเป็น 0.9734 ไม่ใช่ 0.9733 เพราะใน fold 2-4 ไม่มี EfficientNetV2-S สัดส่วนของ DINOv2 ใน OOF ของ fold เหล่านั้นจึงเป็น 6/9 แทน 0.6 ฝั่ง test มีครบ 4 กลุ่ม จึงเป็น 0.6 พอดี
+
 ### อะไรช่วย อะไรไม่ช่วย
 
 ช่วย (อ้างอิง OOF 5 fold ข้างบน ส่วน conv3 ยืนยันด้วย Kaggle แล้ว)
@@ -121,7 +151,7 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
 
 ### ข้อจำกัดที่ควรรู้
 
-- ติดตั้ง timm ในเครื่องนี้ไม่ได้ จึงใช้แค่น้ำหนัก ImageNet-1k ของ torchvision (ConvNeXt-T/S, EfficientNetV2-S) ไม่มีน้ำหนัก ImageNet-22k
+- ติดตั้ง timm ในเครื่องนี้ไม่ได้ ชุด conv4p จึงใช้แค่น้ำหนัก ImageNet-1k ของ torchvision (ConvNeXt-T/S, EfficientNetV2-S) ไม่มีน้ำหนัก ImageNet-22k ส่วน DINOv2 โหลดผ่าน torch.hub จึงไม่ต้องใช้ timm
 - ไม่ใช้ test ช่วยตัดสินใจเรื่องใดเลยตามคำตัดสินของ TA วันที่ 15 พ.ย. ไม่ดูภาพ ไม่ดูค่าสถิติ ไม่ดูสัดส่วนคำทาย ภาพ test ถูกเปิดแค่ตอนทำนายและตอนทำ TTA
 - label ใน `train.csv` ชุดใหม่อ่านมาเป็น int32 ต้องแปลงเป็น long ก่อนเข้า loss ซึ่ง `train.py` ทำให้แล้ว
 - EfficientNetV2-S (`--model efficientnet_v2_s --lr-backbone 5e-4 --lr-head 1e-3 --aug robust --multi-scale`) fold 0-1 เทรนด้วย `--micro-batch 64` แต่ fold 2-4 ต้องลดเป็น 32 เพราะที่ 64 หน่วยความจำ GPU ล้นไปใช้ RAM ของเครื่อง epoch หนึ่งช้าเป็นชั่วโมง batch ยังเป็น 128 เท่าเดิม แต่ BatchNorm ของ EfficientNet เห็นภาพทีละ 32 แทน 64 สูตรของ 5 fold จึงไม่เหมือนกันเป๊ะ (ConvNeXt ใช้ LayerNorm เลยไม่มีผลนี้)
