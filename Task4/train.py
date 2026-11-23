@@ -107,7 +107,7 @@ def parse_args() -> argparse.Namespace:
                         help='balanced = mistakes on games with fewer images count more')
     # Round 3 option. Default reproduces rounds 0-2.
     parser.add_argument('--model', choices=CANDIDATE_MODELS, default='resnet18',
-                        help='backbone (torchvision, ImageNet-1k weights only)')
+                        help='backbone (torchvision with ImageNet-1k weights only, or DINOv2 via torch.hub)')
     # Overnight options. Defaults reproduce rounds 0-3.
     parser.add_argument('--fold', type=int, choices=range(5), default=0,
                         help='which of the 5 parts is held out for grading (0 = the one used so far)')
@@ -146,16 +146,39 @@ def save_checkpoint(path: Path, state: dict) -> None:
 CANDIDATE_MODELS = ['resnet18', 'resnet34', 'resnet50', 'efficientnet_b0', 'regnet_y_1_6gf', 'convnext_tiny',
                     'convnext_small', 'convnext_base', 'efficientnet_v2_s', 'efficientnet_v2_m', 'efficientnet_b3',
                     'swin_t', 'swin_s', 'swin_v2_t', 'regnet_y_3_2gf', 'regnet_y_8gf']
+# 23 Nov: DINOv2 (Meta, self-supervised ViT, Apache 2.0 code and weights) loaded through torch.hub.
+# The competition rules allow pretrained models for Task 4 and name ViT; the team agreed to use it.
+# --height and --width must be multiples of 14 (patch size), so no --multi-scale with these.
+DINO_MODELS = ['dinov2_vits14', 'dinov2_vitb14']
+CANDIDATE_MODELS += DINO_MODELS
 
 
-def build_model(model_name: str) -> tuple[nn.Module, str]:
-    """ImageNet-1k backbone with its last layer replaced by a 5-game layer.
+class DinoClassifier(nn.Module):
+    """DINOv2 backbone + one linear layer on [CLS token, mean of the patch tokens]."""
+
+    def __init__(self, arch: str, pretrained: bool = True) -> None:
+        super().__init__()
+        # Downloads the facebookresearch/dinov2 code (and weights if pretrained) once into the torch hub cache.
+        self.backbone = torch.hub.load('facebookresearch/dinov2', arch, pretrained=pretrained, trust_repo=True)
+        self.head = nn.Linear(2 * self.backbone.embed_dim, NUM_CLASSES)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.backbone.forward_features(x.contiguous())
+        return self.head(torch.cat([out['x_norm_clstoken'], out['x_norm_patchtokens'].mean(1)], dim=1))
+
+
+def build_model(model_name: str, pretrained: bool = True) -> tuple[nn.Module, str]:
+    """Pretrained backbone with its last layer replaced by a 5-game layer.
 
     Returns the model and the name prefix of the new last layer (fc. for ResNet/RegNet,
-    classifier.1. for EfficientNet, classifier.2. for ConvNeXt), so training can give
-    that layer its own learning rate and train it alone in epoch 1.
+    classifier.1. for EfficientNet, classifier.2. for ConvNeXt, head. for DINOv2), so
+    training can give that layer its own learning rate and train it alone in epoch 1.
+    torchvision backbones use ImageNet-1k weights only; pretrained=False skips the
+    download when a trained checkpoint is loaded right after.
     """
-    model = models.get_model(model_name, weights=imagenet_weights(model_name))
+    if model_name in DINO_MODELS:
+        return DinoClassifier(model_name, pretrained), 'head.'
+    model = models.get_model(model_name, weights=imagenet_weights(model_name) if pretrained else None)
     head_name = [name for name, module in model.named_modules() if isinstance(module, nn.Linear)][-1]
     parent_name, _, attribute = head_name.rpartition('.')
     parent = model.get_submodule(parent_name) if parent_name else model
@@ -731,7 +754,7 @@ def load_run_model(run_dir: Path, device: torch.device, which: str = 'best') -> 
         raise SystemExit(f'{checkpoint_path} not found: train this run first')
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     settings = checkpoint['args']
-    model, _ = build_model(settings['model'])
+    model, _ = build_model(settings['model'], pretrained=False)  # trained weights are loaded next
     model.load_state_dict(checkpoint['state_dict'])
     model.to(device, memory_format=torch.channels_last)
     model.eval()
@@ -801,7 +824,7 @@ def predict_test(run_dir: Path, device: torch.device) -> None:
         raise SystemExit(f'{checkpoint_path} not found: train this run first')
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     settings = checkpoint['args']
-    model, _ = build_model(settings['model'])
+    model, _ = build_model(settings['model'], pretrained=False)  # trained weights are loaded next
     model.load_state_dict(checkpoint['state_dict'])
     model.to(device, memory_format=torch.channels_last)
     print(f'=== Task 4 predict with "{run_dir.name}" ({settings["model"]}, epoch {checkpoint["epoch"]}, '
@@ -1015,7 +1038,7 @@ def main() -> None:
     label_tensor = torch.from_numpy(labels).long()  # int64 for the loss (numpy int is 32-bit on some Windows builds)
     shuffle_generator = torch.Generator().manual_seed(args.seed)
 
-    print(f'[3/4] Train {args.model} (ImageNet-pretrained) for {args.epochs} epochs at {args.width}x{args.height} px')
+    print(f'[3/4] Train {args.model} (pretrained) for {args.epochs} epochs at {args.width}x{args.height} px')
     print(f'      settings: split={args.split}  aug={args.aug}  schedule={args.schedule}  '
           f'label_smoothing={args.label_smoothing}  class_weight={args.class_weight}  '
           f'head-only epochs={args.probe_epochs}')
