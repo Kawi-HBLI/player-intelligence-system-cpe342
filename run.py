@@ -31,6 +31,8 @@ def main(argv=None):
     parser.add_argument('--engine', choices=('auto','catboost','sklearn'), default='auto')
     parser.add_argument('--folds', type=int, default=3)
     parser.add_argument('--seed', type=int, default=342)
+    parser.add_argument('--seeds', type=int, nargs='+',
+                        help='Tasks 1-2: train once per seed and average the runs (overrides --seed)')
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--contamination', type=_parse_contamination, default='auto')
     parser.add_argument('--t5-method', choices=('v1', 'v2'), default='v2', help='Task 5 detector version')
@@ -39,6 +41,8 @@ def main(argv=None):
     parser.add_argument('--workers', type=int, default=0)
     parser.add_argument('--file', type=Path)
     args = parser.parse_args(argv)
+    if args.seeds and (args.command != 'train' or not set(args.tasks) <= {1, 2}):
+        parser.error('--seeds only applies to `train` for Tasks 1 and 2')
     os.environ.setdefault('TORCH_HOME', str(Path(__file__).resolve().parent / '.cache' / 'torch'))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -52,7 +56,11 @@ def main(argv=None):
         write_json(args.output_dir / ('run_tasks_' + '_'.join(map(str,args.tasks)) + '.json'), {'started_utc': datetime.now(timezone.utc).isoformat(),
                    'environment': environment(), 'arguments': {k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()}})
         for task in args.tasks:
-            if task in (1,2,3):
+            if task in (1, 2) and args.seeds:
+                from pis.tabular import train_task_seeds
+                result = train_task_seeds(task, args.data_root, args.output_dir, args.folds, args.seeds,
+                                          args.profile, args.threads, args.engine)
+            elif task in (1,2,3):
                 from pis.tabular import train_task
                 result = train_task(task, args.data_root, args.output_dir, args.folds, args.seed,
                                     args.profile, args.threads, args.engine)
