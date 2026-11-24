@@ -117,8 +117,11 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
         # is blended with the boosted trees (OOF macro F1 0.752 -> 0.756). It reads the raw
         # columns so that missing values stay missing.
         from .task2_naive_bayes import SmoothNaiveBayes, geometric_blend
+        from .task2_axis import add_axis_features
         bayes_columns = [c for c in x.columns if not c.startswith('random_metric')]
         bayes_x, bayes_xt = train[bayes_columns], test[bayes_columns]
+        # The trees also get per-row engagement/spending axis summaries (fitted on train only).
+        x, xt = add_axis_features(x, xt, train[target].to_numpy(), categorical)
     y = train[target].to_numpy()
     if task == 3 and (np.any(y < 0) or np.sum(y) <= 0):
         raise ValueError('Task 3 targets must be nonnegative with positive sum')
@@ -226,5 +229,63 @@ def train_task(task: int, data_root: Path, output_dir: Path, folds: int = 3,
     oof_frame['prediction'] = oof_prediction
     oof_frame.to_csv(output_dir / f'task{task}_oof.csv', index=False)
     pd.DataFrame({'player_id': test.player_id, 'prediction': prediction}).to_csv(output_dir / f'task{task}_predictions.csv', index=False)
+    (output_dir / f'task{task}_metrics.json').write_text(json.dumps(metrics, indent=2, allow_nan=False), encoding='utf-8')
+    return metrics
+
+
+def train_task_seeds(task: int, data_root: Path, output_dir: Path, folds: int, seeds: list,
+                     profile: str = 'balanced', threads: int = -1, engine: str = 'auto') -> dict:
+    """Run train_task once per seed (new fold split and model seeds) and average the runs.
+
+    Each run is kept in output_dir/seeds/seed<seed>/. The mean OOF and test probabilities go to
+    output_dir under the usual task file names, so `run.py assemble` reads them unchanged.
+    Task 1's threshold is chosen again on the averaged OOF (F2 of the cheater class).
+    """
+    if task not in (1, 2):
+        raise ValueError('Seed averaging is implemented for Tasks 1 and 2')
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds):
+        raise ValueError('Seed averaging needs at least two distinct seeds')
+    output_dir = Path(output_dir)
+    run_metrics, oofs, tests = [], [], []
+    for seed in seeds:
+        run_dir = output_dir / 'seeds' / f'seed{seed}'
+        run_metrics.append(train_task(task, data_root, run_dir, folds, seed, profile, threads, engine))
+        oofs.append(pd.read_csv(run_dir / f'task{task}_oof.csv'))
+        tests.append(pd.read_csv(run_dir / f'task{task}_probabilities.csv', dtype={'player_id': str}))
+    for frames in (oofs, tests):
+        ids = frames[0].player_id.astype(str)
+        if any(not frame.player_id.astype(str).equals(ids) for frame in frames[1:]):
+            raise ValueError('Seed runs do not share the same row order')
+    oof_columns = [c for c in oofs[0].columns if c.startswith('probability_')]
+    test_columns = [c for c in tests[0].columns if c.startswith('probability_')]
+    oof = np.array([f[oof_columns].to_numpy() for f in oofs]).mean(0)
+    test_mean = np.array([f[test_columns].to_numpy() for f in tests]).mean(0)
+    y = oofs[0].target.to_numpy()
+    oof_frame = oofs[0][['player_id', 'target']].copy()
+    metrics = {'task': task, 'engine': run_metrics[0]['engine'], 'profile': profile, 'folds': folds,
+               'seeds': list(seeds), 'threads': threads, 'n_train': len(y), 'n_test': len(test_mean),
+               'per_seed_oof_score': [m['oof_score'] for m in run_metrics]}
+    if task == 1:
+        threshold, tuned = _threshold(y, oof[:, 0])
+        oof_prediction = (oof[:, 0] >= threshold).astype(int)
+        prediction = (test_mean[:, -1] >= threshold).astype(int)
+        metrics.update(metric='f2_cheater_class', oof_score=tuned, threshold=threshold,
+                       threshold_note='Threshold tuned and evaluated on the same averaged OOF; tuned score is optimistic.')
+        oof_frame['probability_1'] = oof[:, 0]
+    else:
+        classes = np.unique(y)
+        oof_prediction, prediction = classes[oof.argmax(axis=1)], classes[test_mean.argmax(axis=1)]
+        metrics.update(metric='macro_f1', oof_score=float(f1_score(y, oof_prediction, average='macro', zero_division=0)))
+        for i, column in enumerate(oof_columns):
+            oof_frame[column] = oof[:, i]
+    metrics['confusion_matrix'] = confusion_matrix(y, oof_prediction).tolist()
+    oof_frame['prediction'] = oof_prediction
+    oof_frame.to_csv(output_dir / f'task{task}_oof.csv', index=False)
+    probability_frame = tests[0][['player_id']].copy()
+    for i, column in enumerate(test_columns):
+        probability_frame[column] = test_mean[:, i]
+    probability_frame.to_csv(output_dir / f'task{task}_probabilities.csv', index=False)
+    pd.DataFrame({'player_id': tests[0].player_id, 'prediction': prediction}).to_csv(
+        output_dir / f'task{task}_predictions.csv', index=False)
     (output_dir / f'task{task}_metrics.json').write_text(json.dumps(metrics, indent=2, allow_nan=False), encoding='utf-8')
     return metrics

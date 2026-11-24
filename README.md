@@ -6,8 +6,8 @@
 
 | งาน | โจทย์ | ตัววัด | โมเดลสุดท้าย | คะแนนในเครื่อง |
 |---|---|---|---|---|
-| [1](Task1/README.md) | ตรวจจับคนโกง | F2 ของคลาสคนโกง | CatBoost 10 fold + ฟีเจอร์จากช่วงค่า, threshold 0.182 | OOF F2 0.8388 |
-| [2](Task2/README.md) | แบ่งผู้เล่นเป็น 4 กลุ่ม | Macro F1 | naive Bayes ปรับเรียบ 0.6 ผสม CatBoost 0.4 | OOF 0.7567 |
+| [1](Task1/README.md) | ตรวจจับคนโกง | F2 ของคลาสคนโกง | CatBoost 10 fold + ฟีเจอร์จากช่วงค่า เฉลี่ย 10 seed, threshold 0.183 | OOF F2 0.8397 |
+| [2](Task2/README.md) | แบ่งผู้เล่นเป็น 4 กลุ่ม | Macro F1 | naive Bayes ปรับเรียบ 0.6 ผสม CatBoost 0.4 (เพิ่มฟีเจอร์แกน engagement/spending) เฉลี่ย 3 seed | OOF 0.7570 |
 | [3](Task3/README.md) | ทำนายยอดใช้จ่าย 30 วัน | 1 / (1 + NMAE) | V9a: classifier + CatBoost MultiQuantile และเติม `prev_month_spending` ที่ว่าง | OOF 0.7947 |
 | [4](Task4/README.md) | จำแนกภาพหน้าจอ 5 เกม | Macro F1 | conv4p: ConvNeXt 3 สูตร + EfficientNetV2-S, TTA 5 มุมมอง | scene OOF 0.9691 |
 | [5](Task5/README.md) | หาบัญชีผิดปกติ ไม่มี label | F3 | detector v2 สามมุมมองแบบ Empirical Bayes | ไม่มี label |
@@ -62,7 +62,7 @@ python run.py assemble
 
 - CatBoost บน CPU สร้างต้นไม้ต่างกันเล็กน้อยเมื่อจำนวน thread ไม่เท่ากัน ถ้าต้องการผลตรงกับไฟล์ที่ส่งจริงให้ใช้จำนวน thread ตามข้างบน
 - งาน 4 ไม่ต้องเทรนใหม่ คำทำนายของ conv4p เก็บไว้ใน `Task4/final/` แล้ว คำสั่งสร้างใหม่จาก logits และคำสั่งเทรนทั้ง 17 run อยู่ใน [Task4/README.md](Task4/README.md)
-- `v9_impute.py` ใช้ราว 17 นาที `refit.py` ราว 6 นาที งานอื่นใช้ไม่กี่นาที
+- `Task1/train.py` เทรน 10 fold ซ้ำ 10 seed ใช้ราว 15 นาที `Task2/train.py` เทรน 3 fold ซ้ำ 3 seed ใช้ราว 30 นาที (24 thread) `v9_impute.py` ใช้ราว 17 นาที `refit.py` ราว 6 นาที งานอื่นใช้ไม่กี่นาที
 
 ## เทสต์
 
