@@ -27,10 +27,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from torch import nn
-from torchvision import models
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from train import CLASS_NAMES, EXP_ROOT, NUM_CLASSES, TEAM_LABELS, Preprocess  # noqa: E402
+from train import CLASS_NAMES, EXP_ROOT, NUM_CLASSES, TEAM_LABELS, Preprocess, build_model  # noqa: E402
 
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
 
@@ -93,14 +92,10 @@ def pack_models(target: Path, members_file: Path) -> None:
 
 
 def load_model(checkpoint_path: Path, device: torch.device) -> tuple[nn.Module, dict]:
-    """Rebuild the architecture without downloading ImageNet weights, then load the trained weights."""
+    """Rebuild the architecture without downloading pretrained weights, then load the trained weights."""
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)  # trusted team files only
     settings = checkpoint['args']
-    model = models.get_model(settings['model'], weights=None)
-    head_name = [name for name, module in model.named_modules() if isinstance(module, nn.Linear)][-1]
-    parent_name, _, attribute = head_name.rpartition('.')
-    parent = model.get_submodule(parent_name) if parent_name else model
-    setattr(parent, attribute, nn.Linear(getattr(parent, attribute).in_features, NUM_CLASSES))
+    model, _ = build_model(settings['model'], pretrained=False)  # same layers as training, incl. DINOv2
     model.load_state_dict(checkpoint['state_dict'])
     model.to(device, memory_format=torch.channels_last).eval()
     return model, settings

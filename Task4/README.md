@@ -56,11 +56,11 @@ ens18 (ConvNeXt-Tiny 18 ตัว) ได้ราว 0.99 บน near-copy fold
 | conv3 = สามชุดบนเฉลี่ยกัน | rot8+zoom | 0.9687 | 889 | 0.9730 / 0.8953 / 0.9755 / 0.9871 / 0.9771 |
 | EfficientNetV2-S aug robust + multi-scale | rot8+zoom | 0.9660 | 954 | 0.9656 / 0.8909 / 0.9714 / 0.9866 / 0.9766 |
 | conv4 = conv3 + EfficientNetV2-S (4 ชุด น้ำหนักเท่ากัน) | rot8+zoom | 0.9697 | 859 | 0.9732 / 0.8968 / 0.9750 / 0.9895 / 0.9792 |
-| **conv4p** = conv3 + EfficientNetV2-S เฉพาะ fold 0-1 (ไฟล์ส่งสุดท้าย) | rot8+zoom | 0.9691 | 876 | 0.9732 / 0.8968 / 0.9755 / 0.9871 / 0.9771 |
+| **conv4p** = conv3 + EfficientNetV2-S เฉพาะ fold 0-1 (ไฟล์ส่งก่อนเพิ่ม DINOv2) | rot8+zoom | 0.9691 | 876 | 0.9732 / 0.8968 / 0.9755 / 0.9871 / 0.9771 |
 
 fold 1 ยากกว่า fold อื่นชัดเจนในทุกสูตร คลาสที่ยังแย่สุดคือ roblock (F1 0.946 ใน conv3, 0.947 ใน conv4) และ fiveN (0.959 และ 0.961) OOF ของ conv4p ใน fold 0-1 เฉลี่ย 4 ชุด ส่วน fold 2-4 ไม่มี EfficientNetV2-S จึงเท่ากับ conv3
 
-### ไฟล์ส่งสุดท้าย (conv4p)
+### ชุด conv4p (ไฟล์ส่งก่อนเพิ่ม DINOv2)
 
 เฉลี่ย softmax ของ 4 ชุดน้ำหนักเท่ากัน แล้วเลือกคลาสที่ความน่าจะเป็นสูงสุด แต่ละ run เฉลี่ย 5 มุมมอง (rot8+zoom) ก่อน แล้วเฉลี่ยข้าม fold ภายในชุด
 
@@ -73,11 +73,11 @@ fold 1 ยากกว่า fold อื่นชัดเจนในทุก�
 
 EfficientNetV2-S fold 2-4 เทรนเสร็จทีหลัง ทีมลองทั้งแบบ 2 fold และ 5 fold แล้วเลือก conv4p ตามผลบน Kaggle ทั้งที่ conv4 ได้ OOF สูงกว่าเล็กน้อย ซึ่งตรงกับข้อสังเกตข้างบนว่า scene CV จัดอันดับส่วนต่างเล็กๆ ไม่ได้
 
-- คำทำนายของไฟล์นี้อยู่ใน `Task4/final/task4_predictions.csv` (และความน่าจะเป็นใน `task4_predictions.probs.npy`) เก็บไว้ใน repo เพราะ logits ของ 17 run อยู่ใน `outputs/` ซึ่งไม่ขึ้น git ถ้าจะรวมไฟล์ส่ง ให้คัดลอก csv ไปที่ `outputs/main/` แล้วรัน `python run.py assemble`
-- ถ้ามี run ครบในเครื่อง สร้างใหม่ได้ด้วยคำสั่งนี้ ผลตรงกับไฟล์ใน `final/` ทุกแถว:
+- เดิม `Task4/final/` เก็บคำทำนายของชุดนี้ ตอนนี้เปลี่ยนเป็นชุดผสมกับ DINOv2 แล้ว (ดูหัวข้อถัดไป) logits ของทุก run อยู่ใน `outputs/` ซึ่งไม่ขึ้น git
+- ถ้ามี run ครบในเครื่อง สร้างคำทำนายของ conv4p ใหม่ได้ด้วยคำสั่งนี้:
 
 ```bash
-python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}" --group "cnsRS2=cnsRS2_sc_f{fold}" --group "ev2sRS=ev2sRS_sc_f{fold}@0,1" --views rot8+zoom --write-pred Task4/final/task4_predictions.csv
+python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}" --group "cnsRS2=cnsRS2_sc_f{fold}" --group "ev2sRS=ev2sRS_sc_f{fold}@0,1" --views rot8+zoom --write-pred outputs/task4_exp/conv4p/task4_predictions.csv
 ```
 
 - ถ้าจะเทรนใหม่ทั้งหมด ใช้ 17 run (ราว 1 ถึง 1.5 ชั่วโมงต่อ run บน RTX 4050) ทุก run ใช้ `--split scene --epochs 15 --schedule cosine` แล้วตามด้วย `python Task4/train.py --mode tta --run-name <run>` ส่วนที่ต่างกันแต่ละชุดคือ
@@ -85,6 +85,36 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
   - `cntRS`: `--model convnext_tiny --micro-batch 64 --aug robust --multi-scale --lr-backbone 2e-4`
   - `cnsRS2`: `--model convnext_small --micro-batch 32 --aug robust --multi-scale --lr-backbone 1.5e-4`
   - `ev2sRS`: `--model efficientnet_v2_s --micro-batch 64 --aug robust --multi-scale --lr-backbone 5e-4 --lr-head 1e-3`
+
+### DINOv2 ViT-B/14 (เพิ่ม 23 พ.ย.)
+
+ทุกชุดข้างบนใช้น้ำหนัก ImageNet-1k ของ torchvision อย่างเดียว รอบนี้ลอง DINOv2 ของ Meta ซึ่งเป็น ViT ที่ pretrain แบบ self-supervised บนภาพจำนวนมาก กติกาข้อ 3 อนุญาตให้งานนี้ใช้โมเดล pretrained และยก ViT เป็นตัวอย่าง TA ตอบไว้ว่าไม่จำกัด license ขอแค่ไม่ละเมิด license ของโมเดลเอง โค้ดและน้ำหนักของ DINOv2 ใช้ Apache 2.0 ทีมตกลงกันแล้วก่อนใช้
+
+- โหลดผ่าน `torch.hub` (`facebookresearch/dinov2`) ต่อ linear layer บน [CLS token, ค่าเฉลี่ย patch token] ครั้งแรกต้องต่อเน็ตเพื่อดาวน์โหลดโค้ดและน้ำหนัก (ราว 350 MB) คำเตือนเรื่อง xFormers ไม่มีผลกับผล
+- ภาพ 168x322 (ต้องเป็นเลขคูณ 14 ตามขนาด patch จึงไม่ใช้ `--multi-scale`) 12 epoch, cosine, lr backbone 2e-5 / head 5e-4, weight decay 0.05, aug robust ราว 50 นาทีต่อ fold บน RTX 4070 Laptop 8 GB
+- เทรนครบ 5 scene fold แล้วทำ TTA ห้ามุมมองเหมือนชุดอื่น:
+
+```bash
+python Task4/train.py --run-name dnbR_sc_f0 --model dinov2_vitb14 --split scene --fold 0 --epochs 12 --schedule cosine --micro-batch 32 --aug robust --lr-backbone 2e-5 --lr-head 5e-4 --weight-decay 0.05 --height 168 --width 322
+python Task4/train.py --mode tta --run-name dnbR_sc_f0
+```
+
+| ชุด | TTA | OOF | ผิด (ภาพ) | fold 0 / 1 / 2 / 3 / 4 |
+|---|---|---|---|---|
+| conv4p | rot8+zoom | 0.9691 | 876 | 0.9732 / 0.8968 / 0.9755 / 0.9871 / 0.9771 |
+| DINOv2 ViT-B/14 ตัวเดียว | rot8+zoom | 0.9718 | 798 | 0.9770 / 0.9000 / 0.9775 / 0.9915 / 0.9824 |
+| 0.4 conv4p + 0.6 DINOv2 | rot8+zoom | 0.9733 | 755 | 0.9805 / 0.9007 / 0.9794 / 0.9929 / 0.9826 |
+
+- DINOv2 ตัวเดียวชนะ conv4p ทุก fold รวม fold 1 ที่ยากที่สุดด้วย ทั้งที่ conv4p เป็นค่าเฉลี่ยของ 17 โมเดล
+- น้ำหนักผสมเลือกจาก OOF โดยลอง 0 ถึง 1 ทีละ 0.1 ช่วง 0.5 ถึง 0.7 ต่างกันไม่ถึง 0.0003 (ไม่กี่ภาพ) เลือก 0.6 ที่ OOF สูงสุด ถ้าเท่ากันจะเลือกค่าที่ใกล้ 0.5
+- F1 รายคลาสของชุดผสม: 7-11k 0.977, fiveN 0.963, freefried 0.987, pube 0.987, roblock 0.953 คลาสที่ยังแย่สุดยังเป็น roblock กับ fiveN และส่วนใหญ่ผิดเพราะสับสนกับ 7-11k
+- **ไฟล์ส่งสุดท้าย** คือชุดผสมนี้ คำทำนายอยู่ใน `Task4/final/task4_predictions.csv` (ความน่าจะเป็นใน `task4_predictions.probs.npy`) ถ้าจะรวมไฟล์ส่ง ให้คัดลอก csv ไปที่ `outputs/main/` แล้วรัน `python run.py assemble` คำสั่งข้างล่างสร้างไฟล์นี้ใหม่ได้ตรงทุกแถว และได้สัดส่วน 0.4/0.6 พอดี เพราะ conv4p มี 4 กลุ่มน้ำหนัก 1 และ DINOv2 น้ำหนัก 6:
+
+```bash
+python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}" --group "cnsRS2=cnsRS2_sc_f{fold}" --group "ev2sRS=ev2sRS_sc_f{fold}@0,1" --group "dino=dnbR_sc_f{fold}" --views rot8+zoom --weights 1,1,1,1,6 --write-pred Task4/final/task4_predictions.csv
+```
+
+  OOF ที่ `oof.py` พิมพ์ออกมาเป็น 0.9734 ไม่ใช่ 0.9733 เพราะใน fold 2-4 ไม่มี EfficientNetV2-S สัดส่วนของ DINOv2 ใน OOF ของ fold เหล่านั้นจึงเป็น 6/9 แทน 0.6 ฝั่ง test มีครบ 4 กลุ่ม จึงเป็น 0.6 พอดี
 
 ### อะไรช่วย อะไรไม่ช่วย
 
@@ -121,7 +151,7 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
 
 ### ข้อจำกัดที่ควรรู้
 
-- ติดตั้ง timm ในเครื่องนี้ไม่ได้ จึงใช้แค่น้ำหนัก ImageNet-1k ของ torchvision (ConvNeXt-T/S, EfficientNetV2-S) ไม่มีน้ำหนัก ImageNet-22k
+- ติดตั้ง timm ในเครื่องนี้ไม่ได้ ชุด conv4p จึงใช้แค่น้ำหนัก ImageNet-1k ของ torchvision (ConvNeXt-T/S, EfficientNetV2-S) ไม่มีน้ำหนัก ImageNet-22k ส่วน DINOv2 โหลดผ่าน torch.hub จึงไม่ต้องใช้ timm
 - ไม่ใช้ test ช่วยตัดสินใจเรื่องใดเลยตามคำตัดสินของ TA วันที่ 15 พ.ย. ไม่ดูภาพ ไม่ดูค่าสถิติ ไม่ดูสัดส่วนคำทาย ภาพ test ถูกเปิดแค่ตอนทำนายและตอนทำ TTA
 - label ใน `train.csv` ชุดใหม่อ่านมาเป็น int32 ต้องแปลงเป็น long ก่อนเข้า loss ซึ่ง `train.py` ทำให้แล้ว
 - EfficientNetV2-S (`--model efficientnet_v2_s --lr-backbone 5e-4 --lr-head 1e-3 --aug robust --multi-scale`) fold 0-1 เทรนด้วย `--micro-batch 64` แต่ fold 2-4 ต้องลดเป็น 32 เพราะที่ 64 หน่วยความจำ GPU ล้นไปใช้ RAM ของเครื่อง epoch หนึ่งช้าเป็นชั่วโมง batch ยังเป็น 128 เท่าเดิม แต่ BatchNorm ของ EfficientNet เห็นภาพทีละ 32 แทน 64 สูตรของ 5 fold จึงไม่เหมือนกันเป๊ะ (ConvNeXt ใช้ LayerNorm เลยไม่มีผลนี้)
@@ -135,7 +165,7 @@ python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cntRS=cntRS_sc_f{fold}
   - เทรนบน scene split ทีละ fold: `python Task4/train.py --run-name cnsRS2_sc_f0 --model convnext_small --split scene --fold 0 --epochs 15 --schedule cosine --micro-batch 32 --aug robust --multi-scale --lr-backbone 1.5e-4` (ConvNeXt-S ต้อง micro-batch 32 ถึงจะพอดี GPU 8 GB)
   - TTA: `python Task4/train.py --mode tta --run-name cnsRS2_sc_f0` คำนวณห้ามุมมองตั้งต้นทั้ง validation และ test ถ้าใส่ `--tta-views id,hflip,...` จะคำนวณเฉพาะมุมมองที่ยังไม่มีแล้วต่อท้ายไฟล์เดิม
 - `oof.py` รวมผล validation ของทั้ง 5 fold เป็น OOF เทียบชุด TTA และรวมหลายสูตร ทุกการเลือกใช้ OOF เท่านั้น เช่น `python Task4/oof.py --group "cnt=cnt_sc_f{fold}" --group "cnsRS=cnsRS2_sc_f{fold}" --views rot8+zoom --search --write-pred outputs/task4_exp/pred/task4_predictions.csv` ต่อท้ายชื่อกลุ่มด้วย `@0,1` ถ้ากลุ่มนั้นมีแค่บาง fold
-- `final/` คำทำนายของไฟล์ส่งสุดท้าย (conv4p) ดูหัวข้อไฟล์ส่งสุดท้ายข้างบน
+- `final/` คำทำนายของไฟล์ส่งสุดท้าย (0.4 conv4p + 0.6 DINOv2) ดูหัวข้อ DINOv2 ข้างบน
 - `predict.py` ทายภาพในโฟลเดอร์ใดก็ได้ด้วย checkpoint ที่เทรนแล้ว และแพ็กโมเดลไว้ส่งต่อให้คนอื่น (ดูวิธีใช้ที่หัวไฟล์)
 - `stress.py` ทำภาพ validation ให้เสียทีละแบบ 15 แบบ (JPEG, ความละเอียดต่ำ, เบลอ, noise, มืด ฯลฯ) แล้ววัด Macro F1 ใหม่ ตารางบอกด้วยว่าแบบไหนสูตรใดเคยเห็นตอนเทรน: `python Task4/stress.py --runs cnt_sc_f0,cnsRS2_sc_f0 --mix ens=cnt_sc_f0+cnsRS2_sc_f0`
 - ตัวหลักเดิม (ResNet18) ยังรันได้ด้วย `python run.py train --tasks 4 --epochs 5 --batch-size 128` โค้ดอยู่ที่ `pis/image.py`
