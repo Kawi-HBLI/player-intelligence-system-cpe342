@@ -44,6 +44,7 @@ Known issue (step 11, `model/clf_features/clf_features.py`, a negative-result sc
 - `refit.py --variant v9a` (about 6 min) must pass all 7 checks; it writes `outputs/experiments/task3_v9a_refit/task3_predictions.csv`.
   Expected: fold-1 check 0.8020, sum 270,696,618 THB, median of non-zero 2,838.21, Spearman vs CV 0.9967
   (as in `model/refit/refit_v9a_results.md`). The imputer for the refit is fitted on the full train only.
+- Report figures (chapter 4: OOF by version, error by bucket, regression to the mean) come from `report/report_figures.py`: `.\.venv\Scripts\python.exe experiments/task3/report/report_figures.py` writes `report/figures/` and must print `V9a OOF score 0.7947` and `top 1% rows share of error 39.5%`.
 
 **V8 refit (previous champion, Kaggle 0.80684).** It can be rebuilt from the repo alone: no Optuna, no `outputs/` from another
 machine. `v8_cv.py` rebuilds V8's CV (honest-es classifier p, OOF, per-fold test predictions) from
