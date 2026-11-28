@@ -70,10 +70,12 @@ def main():
     fig.tight_layout()
     fig.savefig(OUT / "rtm.png", dpi=150)
 
-    # err_bucket.png: numbers copied from oracle_results.md (baseline) and v9_impute_results.md (V9a)
-    buckets = ["0", "0-1k", "1k-20k", ">20k"]
+    # err_bucket.png: baseline copied from oracle_results.md (its OOF is not in the repo); V9a computed from the OOF
+    buckets = ["0", ">0-1k", "1k-20k", ">20k"]
     base = [91.17, 4.90, 20.51, 199.80]
-    v9a = [92.60, 4.62, 15.52, 169.23]
+    v9a = (pd.Series(err).groupby(pd.cut(y, [-1, 0, 1000, 20000, 1e9], labels=buckets), observed=False).sum()
+           / 1e6).round(2).tolist()
+    print(f"V9a error by bucket (M THB) {v9a}")  # v9_impute_results.md: 92.60 / 4.62 / 15.52 / 169.23
     fig, ax = plt.subplots(figsize=(8, 3.8))
     x = np.arange(len(buckets))
     for bars in (ax.bar(x - 0.2, base, 0.4, color=GREY, label=f"baseline (total {sum(base):.1f}M)"),
@@ -89,15 +91,19 @@ def main():
     fig.tight_layout()
     fig.savefig(OUT / "err_bucket.png", dpi=150)
 
-    # path.png: OOF by version (LOG.md); * = honest early stopping
-    versions = ["baseline", "V2", "V3", "V4", "V8*", "V9a*"]
-    scores = [0.7753, 0.7849, 0.7900, 0.7918, 0.7921, 0.7947]
+    # path.png: OOF by version (LOG.md); * = honest early stopping. The line breaks between the two
+    # protocols (LOG: compare only within one); V4* is V4 re-measured under honest-es (step 14).
+    versions = ["baseline", "V2", "V3", "V4", "V4*", "V8*", "V9a*"]
+    scores = [0.7753, 0.7849, 0.7900, 0.7918, 0.7911, 0.7921, 0.7947]
     fig, ax = plt.subplots(figsize=(8, 3.5))
-    ax.plot(versions, scores, "o-", color=BLUE)
+    ax.plot(range(4), scores[:4], "o-", color=BLUE, label="early stop on the scored fold")
+    ax.plot(range(4, 7), scores[4:], "o-", color=ORANGE, label="honest early stopping (*)")
+    ax.set_xticks(range(len(versions)), versions)
     for i, s in enumerate(scores):
         ax.text(i, s + 0.0008, f"{s:.4f}", ha="center", fontsize=8)
     ax.axhline(0.7735, ls=":", color="#888")
-    ax.text(5.05, 0.7737, "baseline (honest) 0.7735", fontsize=8, ha="right")
+    ax.text(6.05, 0.7737, "baseline (honest) 0.7735", fontsize=8, ha="right")
+    ax.legend(frameon=False, loc="lower right", bbox_to_anchor=(1, 0.08))
     ax.set_ylabel("OOF score")
     ax.set_title("Task 3 OOF by version (* = honest early stopping)")
     tidy(ax)
