@@ -24,3 +24,5 @@ cpe342-kaggle-main/
 
 # Task 3 champion OOF is tracked so every experiment can compare against it fold by fold.
 !experiments/task3/model/champion/*.csv
+# The baseline Task 3 OOF is tracked because v9_impute.py and the other Task 3 scripts check it on startup.
+!baseline/task3_oof.csv

@@ -23,7 +23,8 @@ Task1/ ... Task5/         train.py ของแต่ละงานและ RE
 Task4/final/              คำทำนายงาน 4 ของไฟล์ส่งสุดท้าย (conv4p 0.4 + DINOv2 0.6)
 experiments/task1/        การทดลองและ EDA ของงาน 1
 experiments/task2/        การทดลองและ EDA ของงาน 2
-experiments/task3/        โมเดลสุดท้ายและการทดลองของงาน 3 (ดู LOG.md)
+experiments/task3/        โค้ดโมเดลสุดท้ายของงาน 3 ที่ Task3/train.py เรียกใช้ และการทดลอง (ดู LOG.md)
+baseline/task3_oof.csv    OOF ของ baseline งาน 3 ที่สคริปต์ของงาน 3 ใช้เช็คตอนเริ่ม
 experiments/eda/          ตรวจสูตรตัววัดของงาน 2-5
 tools/swap_submission.py  สลับคอลัมน์บางงานในไฟล์ส่ง
 docs/KAGGLE_FINDINGS_TH.md  บันทึกสิ่งที่พบระหว่างการแข่ง
@@ -51,9 +52,7 @@ python -m venv .venv
 python Task1/train.py --threads 24
 python Task2/train.py --folds 3 --threads 24
 python Task5/train.py
-python experiments/task3/model/v9_impute/v9_impute.py --threads 12
-python experiments/task3/model/refit/refit.py --variant v9a --threads 12
-cp outputs/experiments/task3_v9a_refit/task3_predictions.csv outputs/main/
+python Task3/train.py --threads 12
 cp Task4/final/task4_predictions.csv outputs/main/
 python run.py assemble
 ```
@@ -62,7 +61,8 @@ python run.py assemble
 
 - CatBoost บน CPU สร้างต้นไม้ต่างกันเล็กน้อยเมื่อจำนวน thread ไม่เท่ากัน ถ้าต้องการผลตรงกับไฟล์ที่ส่งจริงให้ใช้จำนวน thread ตามข้างบน
 - งาน 4 ไม่ต้องเทรนใหม่ คำทำนายที่ผสม conv4p 0.4 กับ DINOv2 0.6 แล้วเก็บไว้ใน `Task4/final/` คำสั่งสร้างใหม่จาก logits และคำสั่งเทรนทุก run อยู่ใน [Task4/README.md](Task4/README.md)
-- `Task1/train.py` เทรน 10 fold ซ้ำ 10 seed ใช้ราว 15 นาที `Task2/train.py` เทรน 3 fold ซ้ำ 3 seed ใช้ราว 30 นาที (24 thread) `v9_impute.py` ใช้ราว 17 นาที `refit.py` ราว 6 นาที งานอื่นใช้ไม่กี่นาที
+- `Task1/train.py` เทรน 10 fold ซ้ำ 10 seed ใช้ราว 15 นาที `Task2/train.py` เทรน 3 fold ซ้ำ 3 seed ใช้ราว 30 นาที (24 thread) `Task3/train.py` ใช้ราว 23 นาที (CV 17 นาที กับ refit 6 นาที) งานอื่นใช้ไม่กี่นาที
+- งาน 3 อ่านข้อมูลจาก `../cpe342-kaggle-main` เท่านั้น ไม่รับ `--data-root`
 
 ## เทสต์
 
